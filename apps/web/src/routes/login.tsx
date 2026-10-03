@@ -1,8 +1,8 @@
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { Blocks } from "lucide-react";
 import { useState } from "react";
 import { z } from "zod";
+import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -39,9 +39,7 @@ function Login() {
     <div className="grid min-h-dvh place-items-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <span className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <Blocks className="size-5" />
-          </span>
+          <Logo className="size-12" label="cubehold" />
           <CardTitle className="mt-2 text-lg">Welcome back</CardTitle>
           <CardDescription>Sign in to manage your servers.</CardDescription>
         </CardHeader>

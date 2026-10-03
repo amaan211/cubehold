@@ -11,6 +11,7 @@
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
     "dist": "pnpm --filter @cubehold/packaging dist",
+    "icons": "pnpm --filter @cubehold/packaging icons",
     "e2e": "pnpm --filter @cubehold/e2e e2e",
     "docs": "pnpm --filter @cubehold/docs docs:dev",
     "docs:build": "pnpm --filter @cubehold/docs docs:build",

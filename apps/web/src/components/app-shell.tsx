@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Blocks, Cloud, LogOut, Moon, Plus, Server, Settings, Sun } from "lucide-react";
+import { Cloud, LogOut, Moon, Plus, Server, Settings, Sun } from "lucide-react";
+import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { UnlockBanner } from "@/components/unlock-banner";
 import { useTheme } from "@/lib/theme";
@@ -30,9 +31,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-dvh">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card/40 md:flex">
         <div className="flex h-14 items-center gap-2 px-5">
-          <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-            <Blocks className="size-4" />
-          </span>
+          <Logo className="size-7" />
           <span className="text-sm font-semibold tracking-tight">cubehold</span>
         </div>
 
@@ -88,9 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur md:hidden">
-          <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-            <Blocks className="size-4" />
-          </span>
+          <Logo className="size-7" />
           <span className="text-sm font-semibold">cubehold</span>
           <div className="ml-auto flex">
             <Button

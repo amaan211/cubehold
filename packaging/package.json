@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dist": "tsx build.ts",
+    "icons": "node icons.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

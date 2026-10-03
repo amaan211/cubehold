@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>cubehold</title>
-  <rect width="64" height="64" rx="14" fill="#03a14a"/>
-  <g transform="translate(12 12) scale(1.6667)" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/>
-    <rect x="14" y="2" width="8" height="8" rx="1"/>
+  <rect width="64" height="64" rx="16" fill="#00924a"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 11.5 49.8 21.9v20.2L32 52.5 14.2 42.1V21.9Z"/>
+    <path d="M14.2 21.9 32 32.3l17.8-10.4M32 32.3v20.2"/>
   </g>
 </svg>
