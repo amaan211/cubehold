@@ -23,6 +23,11 @@ from the server's Settings tab. Moving copies the world, history and backups.
 
 ## Good to know
 
+- On the VPS, the agent lives in `/opt/cubehold`, its data (servers, backups, Java) in
+  `/var/lib/cubehold`, and its settings in `/etc/cubehold/agent.env` (readable by root only).
+- The agent updates itself to the panel's version when no server is running on it. Otherwise the
+  host card offers **Update agent**.
+
 - The agent listens on the VPS's loopback only. cubehold reaches it through SSH.
 - After the panel restarts, VPS hosts stay locked until you log in (the panel's key for them is
   encrypted with your password). Servers keep running on the VPS meanwhile.

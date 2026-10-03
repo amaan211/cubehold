@@ -32,12 +32,28 @@ the panel once to start the tunnel again.
 ## Router port forwarding
 
 Turn on **Forward the port on my router** in the Network tab. cubehold asks the router (UPnP) for a
-forward, renews it while the server runs, and removes it when the agent stops. The panel tells you
+one-hour forward and renews it every 20 minutes, so it closes by itself when the computer is off,
+and removes it when the agent stops. The panel tells you
 when forwarding cannot work: shared addresses (CGNAT) from your internet provider, two routers in
 a row, or traffic going through a VPN.
 
 If your router has no UPnP, forward the TCP port shown in the Network tab by hand in the router's
 settings, to the computer's address on your network.
+
+## ngrok, Tailscale and Cloudflare Tunnel
+
+Each is set up from the **Network** tab: paste a token or sign in, and cubehold downloads, checks
+and runs the program.
+
+- **ngrok**: needs a free ngrok account with a card on file (ngrok requires it for TCP addresses
+  and does not charge it). One ngrok connection carries every shared server. The address changes
+  whenever ngrok restarts, and it is Java Edition only (no UDP).
+- **Tailscale**: friends who accept your shared machine join at its Tailscale name, privately.
+  **Funnel** instead makes a server public on port 443, 8443 or 10000, with nothing for players to
+  install. On Windows, cubehold can install Tailscale for you (one administrator prompt).
+- **Cloudflare Tunnel**: create the tunnel in the Cloudflare dashboard and paste its token.
+  Cloudflare only passes raw TCP to another cloudflared, so every player runs
+  `cloudflared access tcp …` first. The Network tab shows the command for each system.
 
 ## Checking that it works
 

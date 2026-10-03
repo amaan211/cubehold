@@ -20,6 +20,10 @@ Everything cubehold creates carries an `cubehold-…` tag. cubehold never touche
 
 ## Costs
 
+Prices come from each provider's API (for AWS, its Price List API, or a US East estimate if the
+token may not read it). The costs on a host card are estimates from the time the VM spent running,
+stopped or saved; the provider's invoice is what counts.
+
 The host card shows the hourly price, this month's cost so far, and last month's.
 
 Providers bill differently when a VM is off:

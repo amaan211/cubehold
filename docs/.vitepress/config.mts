@@ -54,7 +54,10 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        items: [{ text: "Commands and settings", link: "/reference/cli" }],
+        items: [
+          { text: "Commands and settings", link: "/reference/cli" },
+          { text: "Development", link: "/reference/development" },
+        ],
       },
     ],
     search: { provider: "local" },

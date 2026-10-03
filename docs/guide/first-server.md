@@ -42,6 +42,38 @@ In Minecraft: **Multiplayer → Add Server**, paste the address, join.
 | Security | The security score and fixes. |
 | Settings | Name, memory, version, automation, Discord, `server.properties`. |
 
+## Players
+
+The **Players** tab shows who is online (op, kick, ban), the whitelist, ops, player and IP bans,
+and everyone who has ever joined, with playtime and deaths. Changes work while the server is
+stopped too.
+
+Click a name for the **player page**:
+
+- health, hunger and XP (live while they are online), with heal, feed, kill and starve;
+- their inventory and ender chest, drawn like the game, with tooltips;
+- position, respawn point and last death, with teleport;
+- game mode, give item, clear inventory, kick and message;
+- their statistics.
+
+Inventories use the game's own textures. The first time you open a player on a Minecraft version,
+cubehold downloads that version's client from Mojang (about 25 MB) and keeps only what it needs
+(about 2 MB). The inventory comes from the player's saved file, so opening the page asks the
+server to save first (at most every 30 seconds, or when you press Refresh).
+
+## Memory
+
+The memory setting is Java's heap. The Java process uses more than that: about 300 MB plus 10% of
+the heap. The **Overview** shows both the process size and how much of the heap is really in use.
+
+## Changing the version, and deleting
+
+- **Settings → Version** moves the server to another Minecraft version, up or down. See
+  [Backups and schedules](./backups#changing-the-minecraft-version).
+- **Delete** (the bin icon next to Start) removes the server, its world snapshots and any Java
+  runtime no other server needs. It can first copy worlds, plugins or mods, settings, logs and
+  snapshots to a folder you choose; the copy is checked before anything is deleted.
+
 ## Automation
 
 In **Settings → Automation**:
