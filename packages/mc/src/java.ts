@@ -153,11 +153,17 @@ function readReleaseName(root: string): string | null {
   }
 }
 
-/** Locate bin/java(.exe) up to three levels deep (macOS nests under Contents/Home). */
-export async function findJavaBinary(root: string): Promise<string | null> {
-  const exe = process.platform === "win32" ? "java.exe" : "java";
+/**
+ * Locate bin/java(.exe) under a runtime folder. Windows and Linux archives
+ * unpack to jdk-…/bin/java, macOS ones to jdk-…/Contents/Home/bin/java.
+ */
+export async function findJavaBinary(
+  root: string,
+  exe = process.platform === "win32" ? "java.exe" : "java",
+): Promise<string | null> {
   const candidates = [root];
-  for (let depth = 0; depth < 3; depth++) {
+  // root, jdk-…, Contents, Home: four levels of folders that may hold bin/.
+  for (let depth = 0; depth < 4; depth++) {
     const next: string[] = [];
     for (const dir of candidates.splice(0)) {
       const direct = path.join(dir, "bin", exe);
