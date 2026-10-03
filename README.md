@@ -35,6 +35,7 @@ run on machines you own or rent. There is no account with us and no subscription
 | Windows 10/11 | `cubehold-setup-<version>.exe`, a per-user installer with a tray app ([guide](docs/guide/install-windows.md)) |
 | Linux with Docker | `docker compose -f docker/compose.yaml up -d --build` ([guide](docs/guide/install-docker.md)) |
 | Linux | `cubehold-<version>-linux-x64.tar.gz` with systemd services ([guide](docs/guide/install-linux.md)) |
+| macOS (Apple silicon) | `cubehold-<version>-darwin-arm64.tar.gz` ([guide](docs/guide/install-macos.md)) |
 
 No release is published yet: build the files with `pnpm dist` (see [Development](#development)).
 

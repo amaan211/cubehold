@@ -47,5 +47,4 @@ Stop both services, replace `/opt/cubehold` with the new version, start them aga
 
 ## macOS
 
-A macOS archive (Apple silicon) is built the same way but has not been tested yet. Intel Macs are
-not supported.
+See [Install on macOS](./install-macos).

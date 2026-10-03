@@ -24,6 +24,7 @@ export default defineConfig({
           { text: "Install on Windows", link: "/guide/install-windows" },
           { text: "Install with Docker", link: "/guide/install-docker" },
           { text: "Install on Linux", link: "/guide/install-linux" },
+          { text: "Install on macOS", link: "/guide/install-macos" },
           { text: "Your first server", link: "/guide/first-server" },
         ],
       },

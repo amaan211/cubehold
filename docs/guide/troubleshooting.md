@@ -29,6 +29,7 @@ Use **Network → Test from the internet**. It tells you why a connection failed
   another `PORT` in `%LOCALAPPDATA%\cubehold\launcher.env`.
 - **Docker**: `docker compose -f docker/compose.yaml logs panel`.
 - **Linux service**: `journalctl -u cubehold -e`.
+- **macOS**: look at the Terminal window that runs `~/cubehold/cubehold`, or start it again there.
 
 ## "The credential store is locked"
 
@@ -43,8 +44,8 @@ cannot be recovered without it.
 
 ## Getting the logs
 
-| What | Windows | Docker | Linux service |
-| --- | --- | --- | --- |
-| Panel | `%LOCALAPPDATA%\cubehold\logs\panel.log` | `logs panel` | `journalctl -u cubehold` |
-| Agent | `%LOCALAPPDATA%\cubehold\agent.log` | `logs agent` | `journalctl -u cubehold-agent` |
-| A server | Files tab → `logs/latest.log` | same | same |
+| What | Windows | Docker | Linux service | macOS |
+| --- | --- | --- | --- | --- |
+| Panel | `%LOCALAPPDATA%\cubehold\logs\panel.log` | `logs panel` | `journalctl -u cubehold` | its Terminal window |
+| Agent | `%LOCALAPPDATA%\cubehold\agent.log` | `logs agent` | `journalctl -u cubehold-agent` | `~/Library/Application Support/cubehold/agent.log` |
+| A server | Files tab → `logs/latest.log` | same | same | same |

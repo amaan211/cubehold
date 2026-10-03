@@ -14,6 +14,7 @@ How to run it:
 
 - **Windows**: `%LOCALAPPDATA%\Programs\cubehold\app-<version>\cubehold.cmd`
 - **Linux archive**: `./cubehold` in the unpacked folder, or `/opt/cubehold/cubehold`
+- **macOS**: `~/cubehold/cubehold` (wherever you put the folder)
 - **Docker**: `docker compose -f docker/compose.yaml exec panel node /app/server.mjs <command>`
 
 Commands that talk to the agent need the same `DATA_DIR` as the panel.

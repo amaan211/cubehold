@@ -15,7 +15,8 @@ every option, which ones are set up, and a **Test from the internet** button.
 | **Cloudflare Tunnel** | Friends are willing to run a small command first | A hostname on your domain |
 | **A VPS or cloud server** | You want the server online when your PC is off | The VPS's IP address |
 
-If you are unsure, use **playit.gg**. It is free and works on any network.
+If you are unsure, use **playit.gg**. It is free and works on any network. It only runs on
+Windows and Linux, though: playit.gg makes no macOS agent, so on a Mac use one of the others.
 
 ## playit.gg
 

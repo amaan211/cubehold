@@ -41,9 +41,9 @@ panel.
 
 ## What you need
 
-- Windows 10 or 11, a Linux machine with Docker, or a Linux machine for the manual install.
+- Windows 10 or 11, a Mac with Apple silicon, or a Linux machine (with or without Docker).
 - Nothing else. Java is downloaded for you, in the version each Minecraft release needs.
 - For servers that friends join from elsewhere: see [Letting friends join](./friends).
 
-Next: install it on [Windows](./install-windows), with [Docker](./install-docker), or on
-[Linux](./install-linux).
+Next: install it on [Windows](./install-windows), with [Docker](./install-docker), on
+[Linux](./install-linux) or on [macOS](./install-macos).

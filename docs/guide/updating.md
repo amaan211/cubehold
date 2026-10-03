@@ -12,6 +12,12 @@ server first, then removes the program, its Start menu entry and the sign-in aut
 asks whether to delete your data too (servers, worlds, backups, settings in
 `%LOCALAPPDATA%\cubehold`). The answer defaults to **No**, so a reinstall picks everything up again.
 
+## macOS
+
+Stop the panel, replace the program folder with the new version, run the `xattr` line from
+[Install on macOS](./install-macos) again, and start it. Running servers keep going; the agent
+switches to the new version once none is running.
+
 ## Docker
 
 ```sh

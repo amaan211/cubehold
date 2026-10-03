@@ -222,7 +222,8 @@ export function PlayitLink({ onLinked }: { onLinked?: () => void }) {
       </Button>
       {status.data?.supported === false && (
         <p className="text-xs text-muted-foreground">
-          playit.gg has no agent for this operating system.
+          playit.gg only makes its agent for Windows and Linux, so it cannot run on this computer.
+          Use router port forwarding, Tailscale or ngrok instead, or run the server on a VPS.
         </p>
       )}
     </div>
