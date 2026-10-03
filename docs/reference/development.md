@@ -86,5 +86,3 @@ the app, the installer and the tray.
 | `docker` | Dockerfile and compose file |
 | `e2e` | Playwright end-to-end tests |
 | `docs` | This documentation (VitePress) |
-
-`plan.md` has the architecture and what each milestone built.

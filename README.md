@@ -54,5 +54,4 @@ pnpm dev     # API on http://127.0.0.1:4000, web app on http://localhost:5173
 ```
 
 Needs Node.js 24 and pnpm 12. Tests, release builds and the code layout are in
-[docs/reference/development.md](docs/reference/development.md); the architecture and what each
-milestone built are in [plan.md](plan.md).
+[docs/reference/development.md](docs/reference/development.md).
