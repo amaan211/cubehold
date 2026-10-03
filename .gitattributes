@@ -1,0 +1,7 @@
+# LF everywhere, whatever core.autocrlf says: Biome expects LF, and the shell
+# scripts and systemd units ship to Linux. Windows command scripts stay CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
