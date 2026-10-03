@@ -1,0 +1,14 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "packaging"
+  - "e2e"
+  - "docs"
+allowBuilds:
+  argon2: true
+  esbuild: true
+  better-sqlite3: false
+  cpu-features: false
+  ssh2: false
+minimumReleaseAgeExclude:
+  - '@lezer/highlight@1.2.5'

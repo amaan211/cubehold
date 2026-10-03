@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+   Design tokens. Light by default, dark under .dark on <html>.
+   Neutral surfaces with a single green accent.
+--------------------------------------------------------------------------- */
+:root {
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.2 0.01 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2 0.01 250);
+  --muted: oklch(0.955 0.004 250);
+  --muted-foreground: oklch(0.5 0.01 250);
+  --border: oklch(0.9 0.005 250);
+  --input: oklch(0.9 0.005 250);
+  --primary: oklch(0.62 0.17 150);
+  --primary-foreground: oklch(0.99 0 0);
+  --accent: oklch(0.95 0.02 150);
+  --accent-foreground: oklch(0.3 0.08 150);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --ring: oklch(0.62 0.17 150);
+  --radius: 0.625rem;
+  /* Code editor syntax colours */
+  --syntax-key: oklch(0.48 0.14 250);
+  --syntax-string: oklch(0.5 0.13 150);
+  --syntax-number: oklch(0.55 0.15 50);
+  --syntax-keyword: oklch(0.5 0.17 310);
+  --syntax-comment: oklch(0.58 0.01 250);
+}
+
+.dark {
+  --background: oklch(0.15 0.006 250);
+  --foreground: oklch(0.93 0.005 250);
+  --card: oklch(0.19 0.007 250);
+  --card-foreground: oklch(0.93 0.005 250);
+  --muted: oklch(0.24 0.008 250);
+  --muted-foreground: oklch(0.65 0.01 250);
+  --border: oklch(0.27 0.008 250);
+  --input: oklch(0.29 0.008 250);
+  --primary: oklch(0.72 0.17 150);
+  --primary-foreground: oklch(0.15 0.02 150);
+  --accent: oklch(0.26 0.03 150);
+  --accent-foreground: oklch(0.85 0.1 150);
+  --destructive: oklch(0.65 0.2 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --ring: oklch(0.72 0.17 150);
+  --syntax-key: oklch(0.78 0.11 250);
+  --syntax-string: oklch(0.8 0.13 150);
+  --syntax-number: oklch(0.8 0.13 60);
+  --syntax-keyword: oklch(0.78 0.13 310);
+  --syntax-comment: oklch(0.6 0.01 250);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-mono:
+    ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ---------------------------------------------------------------------------
+   Minecraft look for inventories: text with the game's drop shadow, the
+   purple tooltip frame, and the moving enchantment glint.
+--------------------------------------------------------------------------- */
+.mc-text {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-shadow: 0.12em 0.12em 0 #3f3f3f;
+}
+.mc-tooltip {
+  font-family: var(--font-mono);
+  background: rgb(16 0 16 / 0.94);
+  border: 2px solid rgb(16 0 16 / 0.94);
+  box-shadow: inset 0 0 0 1px #5000ff;
+  outline: 1px solid rgb(40 0 127 / 0.8);
+  outline-offset: -3px;
+  text-shadow: 0.12em 0.12em 0 #3f3f3f;
+}
+.mc-glint {
+  background: linear-gradient(
+    115deg,
+    transparent 20%,
+    rgb(190 120 255 / 0.55) 40%,
+    transparent 55%,
+    rgb(150 90 255 / 0.4) 75%,
+    transparent 90%
+  );
+  background-size: 300% 300%;
+  mix-blend-mode: screen;
+  animation: mc-glint 3s linear infinite;
+}
+@keyframes mc-glint {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-glint {
+    animation: none;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+}

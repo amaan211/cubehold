@@ -1,0 +1,35 @@
+{
+  "name": "cubehold",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-cloud Minecraft server manager: provision and manage servers on your own cloud accounts, a cheap VPS, or your own machine.",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "dist": "pnpm --filter @cubehold/packaging dist",
+    "e2e": "pnpm --filter @cubehold/e2e e2e",
+    "docs": "pnpm --filter @cubehold/docs docs:dev",
+    "docs:build": "pnpm --filter @cubehold/docs docs:build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "db:generate": "pnpm --filter @cubehold/server db:generate",
+    "db:migrate": "pnpm --filter @cubehold/server db:migrate",
+    "agent:status": "pnpm --filter @cubehold/server agent:status",
+    "agent:stop": "pnpm --filter @cubehold/server agent:stop"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^24.19.0",
+    "playwright": "^1.63.0",
+    "turbo": "^2.11.4",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

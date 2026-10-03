@@ -1,0 +1,23 @@
+# The cubehold agent: runs the Minecraft servers. Kept separate from the panel so
+# restarting or updating the panel never stops a server.
+[Unit]
+Description=cubehold agent (Minecraft servers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cubehold
+Group=cubehold
+Environment=DATA_DIR=/var/lib/cubehold
+ExecStart=/opt/cubehold/cubehold agent
+# Servers save their worlds on stop; give big worlds time.
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

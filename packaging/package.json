@@ -1,0 +1,16 @@
+{
+  "name": "@cubehold/packaging",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dist": "tsx build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/yazl": "^3.3.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "yazl": "^3.3.1"
+  }
+}

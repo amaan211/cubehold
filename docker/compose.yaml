@@ -1,0 +1,46 @@
+# cubehold with Docker Compose, for a Linux machine (a home server, a NAS, a VPS).
+#
+#   docker compose -f docker/compose.yaml up -d --build
+#
+# then open http://<this machine>:4000 and create the owner account.
+#
+# Both containers use the host's network: Minecraft servers get their ports
+# (25565 and up, 19132/udp for Bedrock) without mapping each one, UPnP can
+# reach the router, and the panel talks to the agent on the host's loopback.
+# Host networking needs Linux; Docker Desktop on Windows/macOS does not
+# forward it the same way (use the Windows installer there).
+
+name: cubehold
+
+x-cubehold: &cubehold
+  image: cubehold:latest
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  network_mode: host
+  # Reaps processes that tunnel clients and Java leave behind.
+  init: true
+  restart: unless-stopped
+  volumes:
+    - data:/data
+
+services:
+  agent:
+    <<: *cubehold
+    command: ["agent"]
+    # Servers save their worlds before stopping; big worlds take a while.
+    stop_grace_period: 3m
+
+  panel:
+    <<: *cubehold
+    depends_on:
+      - agent
+    environment:
+      CUBEHOLD_AGENT: external
+      HOST: 0.0.0.0
+      PORT: "4000"
+      # Behind a reverse proxy with HTTPS, mark the session cookie Secure:
+      # SECURE_COOKIES: "true"
+
+volumes:
+  data:

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>cubehold is not reachable</title>
+    <style>
+      :root { --bg: #f8fafc; --fg: #0f172a; --muted: #64748b; --accent: #03a14a; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #090b0e; --fg: #e2e8f0; --muted: #94a3b8; } }
+      body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg);
+        color: var(--fg); font: 15px/1.5 system-ui, sans-serif; padding: 16px; box-sizing: border-box; }
+      main { max-width: 26rem; }
+      img { width: 48px; height: 48px; }
+      h1 { font-size: 1.25rem; margin: 16px 0 8px; }
+      p { color: var(--muted); margin: 0 0 12px; }
+      button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px;
+        font: inherit; font-weight: 600; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/favicon.svg" alt="" />
+      <h1>cubehold is not reachable</h1>
+      <p>This device cannot reach the computer that runs cubehold. Check that it is on, that cubehold is running,
+        and that you are on the same network (or connected through your VPN or Tailscale).</p>
+      <p>Your Minecraft servers may still be running; this page only means the panel cannot be reached.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>

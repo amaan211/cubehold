@@ -1,0 +1,29 @@
+{
+  "name": "@cubehold/agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./daemon": "./src/daemon.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@cubehold/mc": "workspace:*",
+    "@cubehold/shared": "workspace:*",
+    "@cubehold/tunnels": "workspace:*",
+    "ws": "^8.22.0",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1"
+  }
+}

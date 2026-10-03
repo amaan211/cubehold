@@ -1,0 +1,16 @@
+/* cubehold's green, the same as the panel's primary color. */
+:root {
+  --vp-c-brand-1: #03853d;
+  --vp-c-brand-2: #03a14a;
+  --vp-c-brand-3: #03a14a;
+  --vp-c-brand-soft: rgb(3 161 74 / 14%);
+  --vp-home-hero-name-color: #03a14a;
+}
+
+.dark {
+  --vp-c-brand-1: #3fc168;
+  --vp-c-brand-2: #34a95a;
+  --vp-c-brand-3: #03a14a;
+  --vp-c-brand-soft: rgb(63 193 104 / 16%);
+  --vp-home-hero-name-color: #3fc168;
+}

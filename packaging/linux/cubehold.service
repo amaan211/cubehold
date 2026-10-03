@@ -1,0 +1,24 @@
+# The cubehold panel (web UI and API). It connects to cubehold-agent.service.
+[Unit]
+Description=cubehold panel
+After=network-online.target cubehold-agent.service
+Wants=network-online.target cubehold-agent.service
+
+[Service]
+User=cubehold
+Group=cubehold
+Environment=DATA_DIR=/var/lib/cubehold
+Environment=CUBEHOLD_AGENT=external
+# 127.0.0.1 keeps the panel private to this machine (reach it through an SSH
+# tunnel or a reverse proxy with HTTPS). 0.0.0.0 opens it to the network.
+Environment=HOST=127.0.0.1
+Environment=PORT=4000
+ExecStart=/opt/cubehold/cubehold
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

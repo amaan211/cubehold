@@ -1,0 +1,15 @@
+# Never send local data (the dev panel's servers and database) or build output
+# into the image build.
+**/node_modules
+**/dist
+**/.turbo
+build
+.cache
+.git
+apps/server/data
+**/*.db
+**/*.db-*
+**/*.log
+.env
+.env.*
+coverage
