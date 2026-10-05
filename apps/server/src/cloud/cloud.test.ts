@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advance } from "./service.js";
+import { advance, savingAutomation } from "./service.js";
 import type { CloudMeta } from "./types.js";
 
 const size = {
@@ -54,5 +54,14 @@ describe("cloud usage", () => {
     expect(r.lastMonth).toEqual({ month: "2026-09", total: 0.09 });
     expect(r.usage.month).toBe("2026-10");
     expect(r.usage.running).toBeCloseTo(2, 5);
+  });
+});
+
+describe("defaults on a cloud VM", () => {
+  it("stop after 15 minutes, then delete the VM keeping a snapshot (stop it on AWS)", () => {
+    for (const p of ["hetzner", "digitalocean", "vultr", "linode"] as const) {
+      expect(savingAutomation(p)).toEqual({ idleStopMinutes: 15, vmIdle: "hibernate" });
+    }
+    expect(savingAutomation("aws")).toEqual({ idleStopMinutes: 15, vmIdle: "stop" });
   });
 });

@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as AppCostsRouteImport } from './routes/_app.costs'
 import { Route as AppHostsRouteImport } from './routes/_app.hosts'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppHostsCloudRouteImport } from './routes/_app.hosts_.cloud'
@@ -50,6 +51,11 @@ const SetupRoute = SetupRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCostsRoute = AppCostsRouteImport.update({
+  id: '/costs',
+  path: '/costs',
   getParentRoute: () => AppRoute,
 } as any)
 const AppHostsRoute = AppHostsRouteImport.update({
@@ -152,6 +158,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
+  '/costs': typeof AppCostsRoute
   '/hosts': typeof AppHostsRoute
   '/settings': typeof AppSettingsRoute
   '/hosts/cloud': typeof AppHostsCloudRoute
@@ -175,6 +182,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
+  '/costs': typeof AppCostsRoute
   '/hosts': typeof AppHostsRoute
   '/settings': typeof AppSettingsRoute
   '/': typeof AppIndexRoute
@@ -200,6 +208,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
+  '/_app/costs': typeof AppCostsRoute
   '/_app/hosts': typeof AppHostsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/': typeof AppIndexRoute
@@ -227,6 +236,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/setup'
+    | '/costs'
     | '/hosts'
     | '/settings'
     | '/hosts/cloud'
@@ -250,6 +260,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/setup'
+    | '/costs'
     | '/hosts'
     | '/settings'
     | '/'
@@ -274,6 +285,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/setup'
+    | '/_app/costs'
     | '/_app/hosts'
     | '/_app/settings'
     | '/_app/'
@@ -330,6 +342,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/costs': {
+      id: '/_app/costs'
+      path: '/costs'
+      fullPath: '/costs'
+      preLoaderRoute: typeof AppCostsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/hosts': {
@@ -501,6 +520,7 @@ const AppServersIdRouteWithChildren = AppServersIdRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppCostsRoute: typeof AppCostsRoute
   AppHostsRoute: typeof AppHostsRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -513,6 +533,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppCostsRoute: AppCostsRoute,
   AppHostsRoute: AppHostsRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,

@@ -5,9 +5,12 @@ import {
   awsError,
   CloudError,
   type CloudProvider,
+  type CloudSize,
   costOf,
   createProvider,
+  exactCostOf,
   hostTag,
+  hourlyRate,
   linodeLabel,
   monthlyEstimate,
   type ProviderId,
@@ -895,7 +898,9 @@ describe("costs", () => {
     const aws = { priceHourly: 0.0376, priceMonthly: 27.45, diskGb: 30 };
     const awsStop = monthlyEstimate("aws", aws, 3, "stop");
     expect(awsStop.compute).toBeCloseTo(0.0376 * 91.25, 1);
-    expect(awsStop.storage).toBeCloseTo((30 * 0.08 * (730 - 91.25)) / 730, 1);
+    // The EBS disk is billed the whole month, running or stopped.
+    expect(awsStop.storage).toBeCloseTo(30 * 0.08, 2);
+    expect(monthlyEstimate("aws", aws, 24, "keep").total).toBeCloseTo(27.45 + 3.65 + 2.4, 2);
   });
 
   it("gives every provider a tag they accept", () => {
@@ -903,5 +908,605 @@ describe("costs", () => {
     expect(t).toMatch(/^cubehold-[0-9a-f]{12}$/);
     const ids: ProviderId[] = ["hetzner", "digitalocean", "vultr", "linode", "aws"];
     expect(ids.length).toBe(5);
+  });
+});
+
+// --- what is in an account, and deleting it -------------------------------------------------
+
+describe("inventory", () => {
+  const tag = hostTag("h1");
+
+  it("Hetzner: finds the panel's things by label and prices what costs money", async () => {
+    const api = fakeApi([
+      [
+        "GET",
+        /^\/v1\/servers$/,
+        () => ({
+          json: {
+            servers: [
+              {
+                id: 7,
+                name: "survival-a1b2c3",
+                status: "running",
+                labels: { cubehold: "1", "cubehold-host": tag },
+                public_net: { ipv4: { ip: "203.0.113.7" }, ipv6: null },
+                server_type: {
+                  name: "cx23",
+                  disk: 40,
+                  prices: [
+                    {
+                      location: "fsn1",
+                      price_hourly: { net: "0.0088" },
+                      price_monthly: { net: "5.4900" },
+                    },
+                  ],
+                },
+                datacenter: { location: { name: "fsn1" } },
+              },
+              {
+                id: 8,
+                name: "my-blog",
+                status: "off",
+                labels: {},
+                public_net: { ipv4: null, ipv6: null },
+                server_type: {
+                  name: "cx33",
+                  disk: 80,
+                  prices: [
+                    {
+                      location: "nbg1",
+                      price_hourly: { net: "0.0136" },
+                      price_monthly: { net: "8.4900" },
+                    },
+                  ],
+                },
+                datacenter: { location: { name: "nbg1" } },
+              },
+              {
+                id: 9,
+                name: "going",
+                status: "deleting",
+                labels: { cubehold: "1" },
+                public_net: { ipv4: null, ipv6: null },
+                server_type: { name: "cx23", disk: 40, prices: [] },
+              },
+            ],
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v1\/images$/,
+        (_m, _b, url) => {
+          expect(url.searchParams.get("type")).toBe("snapshot");
+          return {
+            json: {
+              images: [
+                {
+                  id: 31,
+                  description: `${tag}-2026-10-01-12-00`,
+                  image_size: 4,
+                  status: "available",
+                  labels: { cubehold: "1" },
+                },
+              ],
+            },
+          };
+        },
+      ],
+      [
+        "GET",
+        /^\/v1\/firewalls$/,
+        () => ({
+          json: {
+            firewalls: [
+              { id: 41, name: tag, labels: { cubehold: "1" } },
+              { id: 42, name: "office", labels: {} },
+            ],
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v1\/ssh_keys$/,
+        () => ({ json: { ssh_keys: [{ id: 51, name: tag, labels: { cubehold: "1" } }] } }),
+      ],
+      [
+        "GET",
+        /^\/v1\/primary_ips$/,
+        () => ({
+          json: {
+            primary_ips: [
+              { id: 61, name: "spare", type: "ipv4", ip: "198.51.100.2", assignee_id: null },
+              { id: 62, name: "used", type: "ipv4", ip: "198.51.100.3", assignee_id: 7 },
+            ],
+          },
+        }),
+      ],
+      ["GET", /^\/v1\/volumes$/, () => ({ json: { volumes: [] } })],
+      [
+        "GET",
+        /^\/v1\/firewalls\/41$/,
+        () => ({
+          json: {
+            firewall: {
+              applied_to: [
+                { type: "label_selector", label_selector: { selector: `cubehold-host=${tag}` } },
+              ],
+            },
+          },
+        }),
+      ],
+      ["POST", /^\/v1\/firewalls\/41\/actions\/remove_from_resources$/, () => ({ json: {} })],
+      ["DELETE", /^\/v1\/(servers|images|firewalls|ssh_keys|primary_ips)\/\d+$/, () => ({})],
+    ]);
+    const p = createProvider("hetzner", { token: "good-token" }, { fetch: api.fetch });
+    const all = await p.inventory();
+    const byId = (kind: string, id: string) => all.find((r) => r.kind === kind && r.id === id);
+    expect(all.some((r) => r.id === "9")).toBe(false); // already being deleted
+    expect(byId("vm", "7")).toMatchObject({ ours: true, tag, region: "fsn1", monthly: 5.99 });
+    expect(byId("vm", "8")).toMatchObject({ ours: false, tag: null });
+    expect(byId("vm", "8")?.monthly).toBeCloseTo(8.49, 2); // no IPv4 on that one
+    expect(byId("snapshot", "31")).toMatchObject({ ours: true, tag, detail: "4 GB" });
+    expect(byId("snapshot", "31")?.monthly).toBeCloseTo(4 * 0.0143, 4);
+    expect(byId("firewall", "41")).toMatchObject({ ours: true, tag, monthly: 0 });
+    expect(byId("firewall", "42")).toBeUndefined(); // free and not ours: not listed
+    expect(byId("ssh-key", "51")).toMatchObject({ ours: true, tag });
+    expect(byId("ip", "61")).toMatchObject({ ours: false });
+    expect(byId("ip", "61")?.monthly).toBeCloseTo(0.5, 2);
+    expect(byId("ip", "62")).toBeUndefined();
+
+    for (const r of all.filter((x) => x.ours)) await p.deleteResource(r);
+    const deletes = api.calls.filter((c) => c.method === "DELETE").map((c) => c.path);
+    expect(deletes).toEqual([
+      "/v1/servers/7",
+      "/v1/images/31",
+      "/v1/firewalls/41",
+      "/v1/ssh_keys/51",
+    ]);
+    expect(api.calls.some((c) => c.path.endsWith("/remove_from_resources"))).toBe(true);
+  });
+
+  it("DigitalOcean: follows pages and recognises the panel's names and tags", async () => {
+    const api = fakeApi([
+      [
+        "GET",
+        /^\/v2\/droplets$/,
+        (_m, _b, url) =>
+          url.searchParams.get("page") === "1"
+            ? {
+                json: {
+                  droplets: [
+                    {
+                      id: 1,
+                      name: "mc-1",
+                      status: "active",
+                      tags: ["cubehold", tag],
+                      size_slug: "s-2vcpu-4gb",
+                      size: { price_monthly: 24, price_hourly: 0.03571, disk: 80 },
+                      region: { slug: "fra1" },
+                      networks: { v4: [], v6: [] },
+                    },
+                  ],
+                  links: { pages: { next: "https://api.digitalocean.com/v2/droplets?page=2" } },
+                },
+              }
+            : {
+                json: {
+                  droplets: [
+                    {
+                      id: 2,
+                      name: "other",
+                      status: "off",
+                      tags: [],
+                      size_slug: "s-1vcpu-1gb",
+                      size: { price_monthly: 6, price_hourly: 0.00893, disk: 25 },
+                      region: { slug: "nyc1" },
+                      networks: { v4: [], v6: [] },
+                    },
+                  ],
+                  links: {},
+                },
+              },
+      ],
+      [
+        "GET",
+        /^\/v2\/snapshots$/,
+        () => ({
+          json: {
+            snapshots: [
+              { id: "77", name: `${tag}-2026-10-01-09-00`, size_gigabytes: 3, regions: ["fra1"] },
+            ],
+          },
+        }),
+      ],
+      ["GET", /^\/v2\/firewalls$/, () => ({ json: { firewalls: [{ id: "fw-1", name: tag }] } })],
+      ["GET", /^\/v2\/account\/keys$/, () => ({ json: { ssh_keys: [{ id: 5, name: tag }] } })],
+      ["GET", /^\/v2\/tags$/, () => ({ json: { tags: [{ name: tag }, { name: "cubehold" }] } })],
+      ["GET", /^\/v2\/volumes$/, () => ({ json: { volumes: [] } })],
+      [
+        "GET",
+        /^\/v2\/reserved_ips$/,
+        () => ({ json: { reserved_ips: [{ ip: "192.0.2.9", droplet: null }] } }),
+      ],
+      ["DELETE", /^\/v2\/tags\/(.+)$/, () => ({ status: 204 })],
+    ]);
+    const p = createProvider("digitalocean", { token: "good-token" }, { fetch: api.fetch });
+    const all = await p.inventory();
+    expect(all.find((r) => r.id === "1")).toMatchObject({ kind: "vm", ours: true, tag });
+    expect(all.find((r) => r.id === "1")?.monthly).toBe(24);
+    expect(all.find((r) => r.id === "2")).toMatchObject({ kind: "vm", ours: false });
+    expect(all.find((r) => r.id === "77")).toMatchObject({ kind: "snapshot", ours: true, tag });
+    expect(all.find((r) => r.id === "77")?.monthly).toBeCloseTo(0.18, 4);
+    expect(all.filter((r) => r.kind === "tag").map((r) => r.id)).toEqual([tag]);
+    expect(all.find((r) => r.kind === "ip")).toMatchObject({ ours: false, monthly: 5 });
+    await p.deleteResource({ kind: "tag", id: tag });
+    expect(api.calls.at(-1)).toMatchObject({ method: "DELETE", path: `/v2/tags/${tag}` });
+  });
+
+  it("Vultr: pages with a cursor and prices instances from their plan", async () => {
+    const api = fakeApi([
+      [
+        "GET",
+        /^\/v2\/instances$/,
+        (_m, _b, url) =>
+          url.searchParams.get("cursor")
+            ? { json: { instances: [], meta: { links: { next: "" } } } }
+            : {
+                json: {
+                  instances: [
+                    {
+                      id: "i-1",
+                      label: "mc",
+                      region: "ams",
+                      plan: "vc2-2c-4gb",
+                      status: "active",
+                      power_status: "running",
+                      server_status: "ok",
+                      tags: ["cubehold", tag],
+                      main_ip: "203.0.113.7",
+                      v6_main_ip: "",
+                    },
+                  ],
+                  meta: { links: { next: "abc" } },
+                },
+              },
+      ],
+      [
+        "GET",
+        /^\/v2\/plans$/,
+        () => ({ json: { plans: [{ id: "vc2-2c-4gb", monthly_cost: 20, disk: 80 }] } }),
+      ],
+      [
+        "GET",
+        /^\/v2\/snapshots$/,
+        () => ({
+          json: {
+            snapshots: [
+              {
+                id: "s-1",
+                description: `${tag}-x`,
+                size: 25e9,
+                compressed_size: 2e9,
+                status: "complete",
+              },
+            ],
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v2\/firewalls$/,
+        () => ({ json: { firewall_groups: [{ id: "f-1", description: tag }] } }),
+      ],
+      ["GET", /^\/v2\/ssh-keys$/, () => ({ json: { ssh_keys: [{ id: "k-1", name: tag }] } })],
+      ["GET", /^\/v2\/blocks$/, () => ({ json: { blocks: [] } })],
+      ["GET", /^\/v2\/reserved-ips$/, () => ({ json: { reserved_ips: [] } })],
+    ]);
+    const p = createProvider("vultr", { token: "good-token" }, { fetch: api.fetch });
+    const all = await p.inventory();
+    expect(all.find((r) => r.id === "i-1")).toMatchObject({ ours: true, tag, monthly: 20 });
+    expect(all.find((r) => r.id === "s-1")?.monthly).toBeCloseTo(2 * 0.05, 4);
+    expect(all.filter((r) => r.ours).length).toBe(4);
+    expect(api.calls.filter((c) => c.path === "/v2/instances").length).toBe(2);
+  });
+
+  it("Linode: private images only, and region prices", async () => {
+    const api = fakeApi([
+      [
+        "GET",
+        /^\/v4\/linode\/instances$/,
+        () => ({
+          json: {
+            data: [
+              {
+                id: 11,
+                label: "mc",
+                region: "id-cgk",
+                type: "g6-standard-2",
+                status: "offline",
+                tags: ["cubehold", tag],
+                ipv4: [],
+                ipv6: null,
+              },
+            ],
+            pages: 1,
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v4\/linode\/types$/,
+        () => ({
+          json: {
+            data: [
+              {
+                id: "g6-standard-2",
+                label: "Linode 4GB",
+                memory: 4096,
+                vcpus: 2,
+                disk: 81920,
+                class: "standard",
+                price: { hourly: 0.036, monthly: 24 },
+                region_prices: [{ id: "id-cgk", hourly: 0.043, monthly: 28.8 }],
+              },
+            ],
+            pages: 1,
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v4\/images$/,
+        () => ({
+          json: {
+            data: [
+              { id: "linode/ubuntu24.04", label: "Ubuntu", size: 2500, is_public: true },
+              { id: "private/5", label: `${tag}-x`, size: 3072, is_public: false },
+            ],
+            pages: 1,
+          },
+        }),
+      ],
+      [
+        "GET",
+        /^\/v4\/networking\/firewalls$/,
+        () => ({ json: { data: [{ id: 3, label: tag, tags: ["cubehold"] }], pages: 1 } }),
+      ],
+      ["GET", /^\/v4\/volumes$/, () => ({ json: { data: [], pages: 1 } })],
+    ]);
+    const p = createProvider("linode", { token: "good-token" }, { fetch: api.fetch });
+    const all = await p.inventory();
+    expect(all.find((r) => r.id === "11")).toMatchObject({ ours: true, tag, monthly: 28.8 });
+    expect(all.some((r) => r.id === "linode/ubuntu24.04")).toBe(false);
+    expect(all.find((r) => r.id === "private/5")?.monthly).toBeCloseTo(0.3, 4);
+    expect(all.find((r) => r.kind === "firewall")).toMatchObject({ id: "3", ours: true, tag });
+  });
+
+  it("AWS: looks in every region and skips the ones the key cannot use", async () => {
+    const ec2 = (region: string) => ({
+      async send(cmd: unknown) {
+        const name = (cmd as object).constructor.name.replace(/Command$/, "");
+        if (name === "DescribeRegions")
+          return { Regions: [{ RegionName: "eu-central-1" }, { RegionName: "me-south-1" }] };
+        if (region === "me-south-1") {
+          throw Object.assign(new Error("not enabled"), { name: "UnauthorizedOperation" });
+        }
+        switch (name) {
+          case "DescribeInstances":
+            return {
+              Reservations: [
+                {
+                  Instances: [
+                    {
+                      InstanceId: "i-1",
+                      InstanceType: "t3a.medium",
+                      State: { Name: "running" },
+                      Tags: [
+                        { Key: "Name", Value: "mc" },
+                        { Key: "cubehold-host", Value: tag },
+                      ],
+                    },
+                    {
+                      InstanceId: "i-2",
+                      InstanceType: "t3a.medium",
+                      State: { Name: "stopped" },
+                      Tags: [{ Key: "cubehold-host", Value: tag }],
+                    },
+                  ],
+                },
+              ],
+            };
+          case "DescribeSecurityGroups":
+            return {
+              SecurityGroups: [
+                { GroupId: "sg-1", GroupName: tag, Tags: [{ Key: "cubehold-host", Value: tag }] },
+              ],
+            };
+          case "DescribeKeyPairs":
+            return { KeyPairs: [{ KeyName: tag }] };
+        }
+        return {};
+      },
+    });
+    const pricing = () => ({
+      async send() {
+        throw Object.assign(new Error("denied"), { name: "AccessDeniedException" });
+      },
+    });
+    const p = new AwsProvider(
+      {
+        accessKeyId: "AKIA0000000000000000",
+        secretAccessKey: "x".repeat(40),
+        region: "eu-central-1",
+      },
+      { ec2, pricing },
+    );
+    const all = await p.inventory();
+    expect(all.map((r) => r.id).sort()).toEqual(
+      ["eu-central-1:i-1", "eu-central-1:i-2", `eu-central-1:${tag}`, "eu-central-1:sg-1"].sort(),
+    );
+    // Running: compute, IPv4 and the 30 GB disk. Stopped: only the disk.
+    expect(all.find((r) => r.id === "eu-central-1:i-1")?.monthly).toBeCloseTo(
+      0.0376 * 730 + 0.005 * 730 + 30 * 0.08,
+      1,
+    );
+    expect(all.find((r) => r.id === "eu-central-1:i-2")?.monthly).toBeCloseTo(2.4, 2);
+    await expect(p.deleteResource({ kind: "volume", id: "x" })).rejects.toThrow(/AWS console/);
+  });
+});
+
+describe("billing details", () => {
+  const hz = { priceHourly: 0.0088, priceMonthly: 5.49, diskGb: 40 };
+  it("charges by the hour, IPv4 included, until the monthly cap", () => {
+    expect(hourlyRate("hetzner", hz, "running")).toBeCloseTo(0.0088 + 0.5 / 730, 6);
+    // Hetzner bills a stopped server in full, with its address.
+    expect(hourlyRate("hetzner", hz, "stopped")).toBeCloseTo(0.0088 + 0.5 / 730, 6);
+    // Past the VM's monthly cap only the address costs, until it reaches its own cap.
+    expect(hourlyRate("hetzner", hz, "running", 0, 700)).toBeCloseTo(0.5 / 730, 6);
+    expect(hourlyRate("hetzner", hz, "running", 0, 740)).toBe(0);
+    // A 31-day month costs no more than a 30-day one.
+    const october = costOf("hetzner", hz, {
+      running: 744,
+      stopped: 0,
+      hibernated: 0,
+      snapshotGb: 0,
+    });
+    expect(october.total).toBe(5.99);
+    expect(hourlyRate("hetzner", hz, "hibernated", 4)).toBeCloseTo((4 * 0.0143) / 730, 8);
+    expect(hourlyRate("hetzner", hz, "gone")).toBe(0);
+    const aws = { priceHourly: 0.0376, priceMonthly: 27.45, diskGb: 30 };
+    expect(hourlyRate("aws", aws, "stopped")).toBeCloseTo((30 * 0.08) / 730, 6);
+  });
+
+  it("uses the snapshot's real GB-hours when they are known", () => {
+    const c = exactCostOf("hetzner", hz, {
+      running: 0,
+      stopped: 0,
+      hibernated: 730,
+      snapshotGb: 99,
+      snapshotGbHours: 730 * 4,
+    });
+    expect(c.storage).toBeCloseTo(4 * 0.0143, 6);
+  });
+});
+
+// --- plans billed by the hour only, and prices per location ------------------------------------
+
+describe("hourly-only and per-location prices", () => {
+  // Linode's G8 Dedicated plans have no monthly price (seen in /linode/types, October 2026).
+  const g8 = {
+    id: "g8-dedicated-4-2",
+    label: "G8 Dedicated 4x2",
+    memory: 4096,
+    vcpus: 2,
+    disk: 41984,
+    class: "dedicated",
+    price: { hourly: 0.07, monthly: null },
+    region_prices: [{ id: "br-gru", hourly: 0.098, monthly: null }],
+  };
+
+  it("Linode: a plan with no monthly price is billed by the hour, never free", async () => {
+    const api = fakeApi([
+      ["GET", /^\/v4\/linode\/types$/, () => ({ json: { data: [g8], pages: 1 } })],
+      [
+        "GET",
+        /^\/v4\/linode\/instances$/,
+        () => ({
+          json: {
+            data: [
+              {
+                id: 5,
+                label: "linode-server-f9c069",
+                region: "gb-lon",
+                type: "g8-dedicated-4-2",
+                status: "running",
+                tags: ["cubehold"],
+                ipv4: [],
+                ipv6: null,
+              },
+            ],
+            pages: 1,
+          },
+        }),
+      ],
+      ["GET", /^\/v4\/images$/, () => ({ json: { data: [], pages: 1 } })],
+      ["GET", /^\/v4\/networking\/firewalls$/, () => ({ json: { data: [], pages: 1 } })],
+      ["GET", /^\/v4\/volumes$/, () => ({ json: { data: [], pages: 1 } })],
+    ]);
+    const p = createProvider("linode", { token: "good-token" }, { fetch: api.fetch });
+    const [size] = await p.sizes("gb-lon");
+    expect(size).toMatchObject({ priceHourly: 0.07, priceMonthly: 51.1, noMonthlyCap: true });
+    expect(monthlyEstimate("linode", size as CloudSize, 24, "keep").total).toBeCloseTo(51.1, 2);
+    // A 31-day month is not capped either.
+    expect(
+      costOf("linode", size as CloudSize, {
+        running: 744,
+        stopped: 0,
+        hibernated: 0,
+        snapshotGb: 0,
+      }).compute,
+    ).toBeCloseTo(52.08, 2);
+    const [sao] = await p.sizes("br-gru");
+    expect(sao?.priceHourly).toBe(0.098);
+    const vm = (await p.inventory()).find((r) => r.id === "5");
+    expect(vm?.monthly).toBeCloseTo(51.1, 2);
+  });
+
+  it("a size saved without a monthly price is not treated as free", () => {
+    const saved = { priceHourly: 0.07, priceMonthly: null as unknown as number, diskGb: 40 };
+    expect(monthlyEstimate("linode", saved, 24, "keep").total).toBeCloseTo(51.1, 2);
+    expect(hourlyRate("linode", saved, "running", 0, 700)).toBe(0.07);
+  });
+
+  it("Vultr: a location's own price, and hourly-invoiced plans without a cap", async () => {
+    const api = fakeApi([
+      [
+        "GET",
+        /^\/v2\/plans$/,
+        () => ({
+          json: {
+            plans: [
+              {
+                id: "vc2-2c-4gb",
+                type: "vc2",
+                vcpu_count: 2,
+                ram: 4096,
+                disk: 80,
+                monthly_cost: 20,
+                hourly_cost: 0.027,
+                invoice_type: "monthly",
+                location_cost: { sao: { monthly_cost: 30, hourly_cost: 0.041 } },
+                locations: ["ams", "sao"],
+              },
+              {
+                id: "vhp-2c-4gb-amd",
+                type: "vhp",
+                vcpu_count: 2,
+                ram: 4096,
+                disk: 100,
+                monthly_cost: 43.8,
+                hourly_cost: 0.06,
+                invoice_type: "hourly",
+                location_cost: {},
+                locations: ["ams"],
+              },
+            ],
+          },
+        }),
+      ],
+    ]);
+    const p = createProvider("vultr", { token: "good-token" }, { fetch: api.fetch });
+    const ams = await p.sizes("ams");
+    expect(ams.find((s) => s.id === "vc2-2c-4gb")).toMatchObject({
+      priceMonthly: 20,
+      priceHourly: 0.027,
+      noMonthlyCap: false,
+    });
+    expect(ams.find((s) => s.id === "vhp-2c-4gb-amd")).toMatchObject({ noMonthlyCap: true });
+    const sao = await p.sizes("sao");
+    expect(sao[0]).toMatchObject({ priceMonthly: 30, priceHourly: 0.041 });
+    // The hourly price for 730 hours stays under the cap here.
+    expect(monthlyEstimate("vultr", sao[0] as CloudSize, 24, "keep").total).toBe(29.93);
   });
 });

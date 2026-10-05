@@ -45,3 +45,14 @@ export function formatDate(iso: string): string {
     minute: "2-digit",
   });
 }
+
+/** A price: cents for amounts from 1, more digits for small hourly rates. */
+export function formatMoney(n: number, currency: "EUR" | "USD"): string {
+  const abs = Math.abs(n);
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: abs > 0 && abs < 0.1 ? 4 : abs < 1 ? 3 : 2,
+  }).format(n);
+}

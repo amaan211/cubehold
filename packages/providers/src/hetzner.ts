@@ -1,14 +1,17 @@
 import { continentOf, RestClient } from "./http.js";
-import type {
-  CloudProvider,
-  CloudRegion,
-  CloudSize,
-  CloudVm,
-  CreateVmRequest,
-  FetchLike,
-  FirewallPort,
-  SnapshotState,
-  VmStatus,
+import { alwaysOnMonthly, BILLING } from "./pricing.js";
+import {
+  type CloudProvider,
+  type CloudRegion,
+  type CloudResource,
+  type CloudSize,
+  type CloudVm,
+  type CreateVmRequest,
+  type FetchLike,
+  type FirewallPort,
+  type SnapshotState,
+  tagIn,
+  type VmStatus,
 } from "./types.js";
 
 interface HzPrice {
@@ -34,6 +37,13 @@ interface HzServer {
   status: string;
   public_net: { ipv4: { ip: string } | null; ipv6: { ip: string } | null };
 }
+interface HzListedServer extends HzServer {
+  name: string;
+  labels?: Record<string, string>;
+  server_type: Pick<HzServerType, "name" | "disk" | "prices">;
+  datacenter?: { location?: { name: string } };
+}
+type Labels = Record<string, string> | undefined;
 interface Paginated {
   meta?: { pagination?: { next_page: number | null } };
 }
@@ -219,15 +229,173 @@ export class HetznerProvider implements CloudProvider {
     return this.#api.del(`/images/${imageId}`);
   }
 
+  async inventory(): Promise<CloudResource[]> {
+    const [servers, images, firewalls, keys, ips, volumes] = await Promise.all([
+      this.#all<HzListedServer>("/servers", "servers"),
+      this.#all<{
+        id: number;
+        description: string;
+        image_size: number | null;
+        status: string;
+        labels?: Record<string, string>;
+      }>("/images?type=snapshot", "images"),
+      this.#all<{ id: number; name: string; labels?: Record<string, string> }>(
+        "/firewalls",
+        "firewalls",
+      ),
+      this.#all<{ id: number; name: string; labels?: Record<string, string> }>(
+        "/ssh_keys",
+        "ssh_keys",
+      ),
+      this.#all<{
+        id: number;
+        name: string;
+        type: string;
+        ip: string;
+        assignee_id: number | null;
+        datacenter?: { location?: { name: string } };
+      }>("/primary_ips", "primary_ips"),
+      this.#all<{
+        id: number;
+        name: string;
+        size: number;
+        server: number | null;
+        location?: { name: string };
+        labels?: Record<string, string>;
+      }>("/volumes", "volumes"),
+    ]);
+    const ours = (labels: Labels, name: string) =>
+      labels?.cubehold === "1" || !!labels?.["cubehold-host"] || !!tagIn(name);
+    const out: CloudResource[] = [];
+    for (const v of servers) {
+      if (v.status === "deleting") continue;
+      const loc = v.datacenter?.location?.name ?? null;
+      const price = v.server_type.prices.find((p) => p.location === loc);
+      out.push({
+        kind: "vm",
+        id: String(v.id),
+        name: v.name,
+        region: loc,
+        ours: ours(v.labels, v.name),
+        tag: v.labels?.["cubehold-host"] ?? tagIn(v.name),
+        detail: `${v.server_type.name.toUpperCase()}, ${v.status === "off" ? "off" : v.status}`,
+        monthly: price
+          ? alwaysOnMonthly("hetzner", {
+              priceHourly: Number(price.price_hourly.net),
+              priceMonthly: Number(price.price_monthly.net),
+              diskGb: v.server_type.disk,
+            }) - (v.public_net.ipv4 ? 0 : 0.5)
+          : null,
+      });
+    }
+    for (const i of images) {
+      out.push({
+        kind: "snapshot",
+        id: String(i.id),
+        name: i.description || `snapshot ${i.id}`,
+        region: null,
+        ours: ours(i.labels, i.description),
+        tag: tagIn(i.description),
+        detail: i.image_size != null ? `${round1(i.image_size)} GB` : i.status,
+        monthly: i.image_size != null ? i.image_size * BILLING.hetzner.snapshotPerGbMonth : null,
+      });
+    }
+    for (const f of firewalls) {
+      if (!ours(f.labels, f.name)) continue;
+      out.push(free("firewall", String(f.id), f.name, tagIn(f.name)));
+    }
+    for (const k of keys) {
+      if (!ours(k.labels, k.name)) continue;
+      out.push(free("ssh-key", String(k.id), k.name, tagIn(k.name)));
+    }
+    for (const ip of ips) {
+      // Assigned addresses are part of their server's price; IPv6 is free.
+      if (ip.assignee_id !== null || ip.type !== "ipv4") continue;
+      out.push({
+        kind: "ip",
+        id: String(ip.id),
+        name: ip.name || ip.ip,
+        region: ip.datacenter?.location?.name ?? null,
+        ours: false,
+        tag: null,
+        detail: `${ip.ip}, not assigned`,
+        monthly: BILLING.hetzner.ipv4MonthlyCap,
+      });
+    }
+    for (const v of volumes) {
+      out.push({
+        kind: "volume",
+        id: String(v.id),
+        name: v.name,
+        region: v.location?.name ?? null,
+        ours: ours(v.labels, v.name),
+        tag: tagIn(v.name),
+        detail: `${v.size} GB${v.server === null ? ", not attached" : ""}`,
+        monthly: null,
+      });
+    }
+    return out;
+  }
+
+  async deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void> {
+    switch (r.kind) {
+      case "vm":
+        return this.deleteVm(r.id);
+      case "snapshot":
+        return this.deleteSnapshot(r.id);
+      case "firewall":
+        return this.deleteFirewall(r.id);
+      case "ssh-key":
+        return this.deleteSshKey(r.id);
+      case "ip":
+        return this.#api.del(`/primary_ips/${r.id}`);
+      case "volume": {
+        const v = await this.#api.find<{ volume: { server: number | null } }>(`/volumes/${r.id}`);
+        if (!v) return;
+        if (v.volume.server !== null) await this.#api.post(`/volumes/${r.id}/actions/detach`);
+        // A detach takes a moment; deleting an attached volume fails.
+        for (let i = 0; ; i++) {
+          try {
+            return await this.#api.del(`/volumes/${r.id}`);
+          } catch (err) {
+            if (i >= 5) throw err;
+            await new Promise((ok) => setTimeout(ok, 3_000));
+          }
+        }
+      }
+      case "tag":
+        return;
+    }
+  }
+
   async #all<T>(path: string, key: string): Promise<T[]> {
     const out: T[] = [];
+    const [base, search] = path.split("?");
+    const filter = Object.fromEntries(new URLSearchParams(search ?? ""));
     for (let page = 1; page < 50; page++) {
-      const r = await this.#api.get<Paginated & Record<string, T[]>>(path, { per_page: 50, page });
+      const r = await this.#api.get<Paginated & Record<string, T[]>>(base as string, {
+        ...filter,
+        per_page: 50,
+        page,
+      });
       out.push(...((r[key] as T[]) ?? []));
       if (!r.meta?.pagination?.next_page) break;
     }
     return out;
   }
+}
+
+function free(
+  kind: CloudResource["kind"],
+  id: string,
+  name: string,
+  tag: string | null,
+): CloudResource {
+  return { kind, id, name, region: null, ours: true, tag, detail: null, monthly: 0 };
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 function rules(ports: FirewallPort[]) {

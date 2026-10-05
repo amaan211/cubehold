@@ -22,11 +22,13 @@ import {
 } from "@aws-sdk/client-ec2";
 import { GetProductsCommand, PricingClient } from "@aws-sdk/client-pricing";
 import { continentOf } from "./http.js";
+import { alwaysOnMonthly, BILLING, HOURS_PER_MONTH } from "./pricing.js";
 import {
   CloudError,
   type CloudErrorCode,
   type CloudProvider,
   type CloudRegion,
+  type CloudResource,
   type CloudSize,
   type CloudVm,
   type CreateVmRequest,
@@ -88,6 +90,9 @@ const REGION_NAMES: Record<string, [string, string]> = {
   "me-central-1": ["Middle East (UAE)", "AE"],
   "af-south-1": ["Africa (Cape Town)", "ZA"],
 };
+
+/** The root disk the panel gives every instance. */
+const ROOT_DISK_GB = 30;
 
 const ALL_V4 = [{ CidrIp: "0.0.0.0/0" }];
 const ALL_V6 = [{ CidrIpv6: "::/0" }];
@@ -172,7 +177,7 @@ export class AwsProvider implements CloudProvider {
         label: name,
         vcpus: t.VCpuInfo?.DefaultVCpus ?? 0,
         memoryMb: t.MemoryInfo?.SizeInMiB ?? 0,
-        diskGb: 30,
+        diskGb: ROOT_DISK_GB,
         arch: t.ProcessorInfo?.SupportedArchitectures?.includes("arm64") ? "arm64" : "x64",
         dedicated: false,
         burstable: t.BurstablePerformanceSupported === true || /^t\d/.test(name),
@@ -359,6 +364,141 @@ export class AwsProvider implements CloudProvider {
   }
 
   async deleteSnapshot(): Promise<void> {}
+
+  /** Instances in every enabled region, and the panel's security groups and key pairs. */
+  async inventory(): Promise<CloudResource[]> {
+    const r = (await this.#send(this.cred.region, new DescribeRegionsCommand({}))) as {
+      Regions?: Array<{ RegionName?: string }>;
+    };
+    const regions = (r.Regions ?? []).map((x) => x.RegionName ?? "").filter(Boolean);
+    const out: CloudResource[] = [];
+    const queue = [...regions];
+    const worker = async () => {
+      for (let region = queue.shift(); region; region = queue.shift()) {
+        out.push(...(await this.#regionInventory(region)));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker));
+    return out;
+  }
+
+  async #regionInventory(region: string): Promise<CloudResource[]> {
+    type Tags = Array<{ Key?: string; Value?: string }>;
+    let found: unknown[];
+    try {
+      found = await Promise.all([
+        this.#send(
+          region,
+          new DescribeInstancesCommand({
+            Filters: [
+              {
+                Name: "instance-state-name",
+                Values: ["pending", "running", "stopping", "stopped"],
+              },
+            ],
+          }),
+        ),
+        this.#send(
+          region,
+          new DescribeSecurityGroupsCommand({
+            Filters: [{ Name: "tag-key", Values: ["cubehold-host"] }],
+          }),
+        ),
+        this.#send(
+          region,
+          new DescribeKeyPairsCommand({ Filters: [{ Name: "key-name", Values: ["cubehold-*"] }] }),
+        ),
+      ]);
+    } catch (err) {
+      // A region the account cannot use (not opted in, or blocked by policy) has nothing in it.
+      if (err instanceof CloudError && (err.code === "permission" || err.code === "auth"))
+        return [];
+      throw err;
+    }
+    const inst = found[0] as {
+      Reservations?: Array<{
+        Instances?: Array<AwsInstance & { InstanceType?: string; Tags?: Tags }>;
+      }>;
+    };
+    const groups = found[1] as {
+      SecurityGroups?: Array<{ GroupId?: string; GroupName?: string; Tags?: Tags }>;
+    };
+    const keys = found[2] as { KeyPairs?: Array<{ KeyName?: string }> };
+    const out: CloudResource[] = [];
+    for (const res of inst.Reservations ?? []) {
+      for (const i of res.Instances ?? []) {
+        if (!i.InstanceId) continue;
+        const tag = i.Tags?.find((t) => t.Key === "cubehold-host")?.Value ?? null;
+        const name = i.Tags?.find((t) => t.Key === "Name")?.Value ?? i.InstanceId;
+        const type = i.InstanceType ?? "";
+        const state = i.State?.Name ?? "unknown";
+        const hourly = (await this.#price(type, region)) ?? TYPES[type] ?? null;
+        // Other people's disks are not visible to the panel's policy; ours are 30 GB.
+        const diskGb = tag ? ROOT_DISK_GB : 0;
+        const disk = diskGb * BILLING.aws.diskPerGbMonth || 0;
+        const monthly =
+          state === "stopped"
+            ? disk
+            : hourly === null
+              ? null
+              : alwaysOnMonthly("aws", {
+                  priceHourly: hourly,
+                  priceMonthly: hourly * HOURS_PER_MONTH,
+                  diskGb,
+                });
+        out.push({
+          kind: "vm",
+          id: `${region}:${i.InstanceId}`,
+          name,
+          region,
+          ours: !!tag,
+          tag,
+          detail: `${type}, ${state === "stopped" ? "stopped" : state}`,
+          monthly,
+        });
+      }
+    }
+    for (const g of groups.SecurityGroups ?? []) {
+      if (!g.GroupId) continue;
+      out.push({
+        kind: "firewall",
+        id: `${region}:${g.GroupId}`,
+        name: g.GroupName ?? g.GroupId,
+        region,
+        ours: true,
+        tag: g.Tags?.find((t) => t.Key === "cubehold-host")?.Value ?? null,
+        detail: "Security group",
+        monthly: 0,
+      });
+    }
+    for (const k of keys.KeyPairs ?? []) {
+      if (!k.KeyName) continue;
+      out.push({
+        kind: "ssh-key",
+        id: `${region}:${k.KeyName}`,
+        name: k.KeyName,
+        region,
+        ours: true,
+        tag: /^(cubehold-[0-9a-f]{12})$/.exec(k.KeyName)?.[1] ?? null,
+        detail: "Key pair",
+        monthly: 0,
+      });
+    }
+    return out;
+  }
+
+  async deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void> {
+    switch (r.kind) {
+      case "vm":
+        return this.deleteVm(r.id);
+      case "firewall":
+        return this.deleteFirewall(r.id);
+      case "ssh-key":
+        return this.deleteSshKey(r.id);
+      default:
+        throw new CloudError("unsupported", "Delete this in the AWS console.");
+    }
+  }
 
   async #ubuntu(
     region: string,

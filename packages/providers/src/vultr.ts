@@ -1,14 +1,17 @@
 import { continentOf, RestClient } from "./http.js";
+import { alwaysOnMonthly, BILLING } from "./pricing.js";
 import {
   CloudError,
   type CloudProvider,
   type CloudRegion,
+  type CloudResource,
   type CloudSize,
   type CloudVm,
   type CreateVmRequest,
   type FetchLike,
   type FirewallPort,
   type SnapshotState,
+  tagIn,
 } from "./types.js";
 
 interface VuInstance {
@@ -29,6 +32,30 @@ interface VuRule {
 
 /** Plan families for game servers: regular, high frequency/performance and dedicated. */
 const PLAN_TYPES = new Set(["vc2", "vhf", "vhp", "voc", "vdc"]);
+
+interface VuPlan {
+  id: string;
+  vcpu_count: number;
+  ram: number;
+  disk: number;
+  monthly_cost: number;
+  hourly_cost?: number;
+  type: string;
+  locations: string[];
+  /** "hourly" plans have no monthly cap. */
+  invoice_type?: "monthly" | "hourly";
+  /** Locations that cost more than the plan's base price. */
+  location_cost?: Record<string, { monthly_cost: number; hourly_cost: number }>;
+}
+
+/** A plan's price in a region. Monthly-invoiced plans bill hourly up to 672 hours. */
+function priceIn(p: VuPlan, region: string) {
+  const here = p.location_cost?.[region];
+  const monthly = here?.monthly_cost ?? p.monthly_cost;
+  const hourly =
+    here?.hourly_cost ?? p.hourly_cost ?? Math.round((monthly / 672) * 10_000) / 10_000;
+  return { priceHourly: hourly, priceMonthly: monthly, noMonthlyCap: p.invoice_type === "hourly" };
+}
 
 /** Vultr API v2 with an account API key. Prices in US dollars. */
 export class VultrProvider implements CloudProvider {
@@ -64,18 +91,7 @@ export class VultrProvider implements CloudProvider {
   }
 
   async sizes(region: string): Promise<CloudSize[]> {
-    const r = await this.#api.get<{
-      plans: Array<{
-        id: string;
-        vcpu_count: number;
-        ram: number;
-        disk: number;
-        monthly_cost: number;
-        hourly_cost?: number;
-        type: string;
-        locations: string[];
-      }>;
-    }>("/plans", { type: "all", per_page: 500 });
+    const r = await this.#api.get<{ plans: VuPlan[] }>("/plans", { type: "all", per_page: 500 });
     return r.plans
       .filter((p) => PLAN_TYPES.has(p.type) && p.locations.includes(region))
       .map((p) => ({
@@ -86,9 +102,7 @@ export class VultrProvider implements CloudProvider {
         diskGb: p.disk,
         arch: "x64" as const,
         dedicated: p.type === "voc" || p.type === "vdc",
-        // Vultr bills hourly up to 672 hours a month.
-        priceHourly: p.hourly_cost ?? Math.round((p.monthly_cost / 672) * 10_000) / 10_000,
-        priceMonthly: p.monthly_cost,
+        ...priceIn(p, region),
         currency: "USD" as const,
         priceSource: "api" as const,
       }))
@@ -209,6 +223,139 @@ export class VultrProvider implements CloudProvider {
     return this.#api.del(`/snapshots/${imageId}`);
   }
 
+  async inventory(): Promise<CloudResource[]> {
+    const [instances, plans, snapshots, firewalls, keys, blocks, ips] = await Promise.all([
+      this.#all<VuInstance & { label: string; region: string; plan: string; tags?: string[] }>(
+        "/instances",
+        "instances",
+      ),
+      this.#all<VuPlan>("/plans?type=all", "plans"),
+      this.#all<{
+        id: string;
+        description: string;
+        size: number;
+        compressed_size?: number;
+        status: string;
+      }>("/snapshots", "snapshots"),
+      this.#all<{ id: string; description: string }>("/firewalls", "firewall_groups"),
+      this.#all<{ id: string; name: string }>("/ssh-keys", "ssh_keys"),
+      this.#all<{
+        id: string;
+        label: string;
+        size_gb: number;
+        cost?: number;
+        attached_to_instance: string;
+        region: string;
+      }>("/blocks", "blocks"),
+      this.#all<{
+        id: string;
+        subnet: string;
+        instance_id: string;
+        region: string;
+        label?: string;
+      }>("/reserved-ips", "reserved_ips"),
+    ]);
+    const planOf = new Map(plans.map((x) => [x.id, x]));
+    const out: CloudResource[] = [];
+    for (const i of instances) {
+      const tags = i.tags ?? [];
+      const tag = tags.find((t) => tagIn(t) === t) ?? null;
+      const plan = planOf.get(i.plan);
+      out.push({
+        kind: "vm",
+        id: i.id,
+        name: i.label || i.id,
+        region: i.region,
+        ours: tags.includes("cubehold") || !!tag,
+        tag,
+        detail: `${i.plan}, ${i.power_status === "stopped" ? "off" : i.status}`,
+        monthly: plan
+          ? alwaysOnMonthly("vultr", { ...priceIn(plan, i.region), diskGb: plan.disk })
+          : null,
+      });
+    }
+    for (const sn of snapshots) {
+      const gb = (sn.compressed_size || sn.size) / 1e9;
+      out.push({
+        kind: "snapshot",
+        id: sn.id,
+        name: sn.description || `snapshot ${sn.id}`,
+        region: null,
+        ours: !!tagIn(sn.description),
+        tag: tagIn(sn.description),
+        detail: `${Math.round(gb * 10) / 10} GB`,
+        monthly: gb * BILLING.vultr.snapshotPerGbMonth,
+      });
+    }
+    for (const f of firewalls) {
+      if (tagIn(f.description)) out.push(free("firewall", f.id, f.description));
+    }
+    for (const k of keys) {
+      if (tagIn(k.name)) out.push(free("ssh-key", k.id, k.name));
+    }
+    for (const b of blocks) {
+      out.push({
+        kind: "volume",
+        id: b.id,
+        name: b.label || b.id,
+        region: b.region,
+        ours: !!tagIn(b.label),
+        tag: tagIn(b.label),
+        detail: `${b.size_gb} GB${b.attached_to_instance ? "" : ", not attached"}`,
+        monthly: b.cost ?? null,
+      });
+    }
+    for (const ip of ips) {
+      if (ip.instance_id) continue;
+      out.push({
+        kind: "ip",
+        id: ip.id,
+        name: ip.label || ip.subnet,
+        region: ip.region,
+        ours: false,
+        tag: null,
+        detail: `${ip.subnet}, not attached`,
+        monthly: null,
+      });
+    }
+    return out;
+  }
+
+  async deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void> {
+    switch (r.kind) {
+      case "vm":
+        return this.deleteVm(r.id);
+      case "snapshot":
+        return this.deleteSnapshot(r.id);
+      case "firewall":
+        return this.deleteFirewall(r.id);
+      case "ssh-key":
+        return this.deleteSshKey(r.id);
+      case "volume":
+        return this.#api.del(`/blocks/${r.id}`);
+      case "ip":
+        return this.#api.del(`/reserved-ips/${r.id}`);
+      case "tag":
+        return;
+    }
+  }
+
+  async #all<T>(path: string, key: string): Promise<T[]> {
+    const [base, search] = path.split("?");
+    const filter = Object.fromEntries(new URLSearchParams(search ?? ""));
+    const out: T[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const r = await this.#api.get<
+        Record<string, unknown> & { meta?: { links?: { next?: string } } }
+      >(base as string, { ...filter, per_page: 500, cursor });
+      out.push(...((r[key] as T[] | undefined) ?? []));
+      cursor = r.meta?.links?.next || undefined;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
   async #ubuntu(): Promise<number> {
     if (this.#ubuntuOs !== null) return this.#ubuntuOs;
     const r = await this.#api.get<{ os: Array<{ id: number; name: string; arch: string }> }>(
@@ -234,6 +381,10 @@ export class VultrProvider implements CloudProvider {
       ...(rule.protocol === "icmp" ? { port: undefined } : {}),
     });
   }
+}
+
+function free(kind: CloudResource["kind"], id: string, name: string): CloudResource {
+  return { kind, id, name, region: null, ours: true, tag: tagIn(name), detail: null, monthly: 0 };
 }
 
 function wantedRules(ports: FirewallPort[]) {

@@ -1,11 +1,5 @@
 import { hostTotalMemoryMb, listVersions, SUPPORTED_SOFTWARE } from "@cubehold/mc";
-import {
-  estimateProcessMemoryMb,
-  HOST_RESERVE_MB,
-  LOCAL_HOST_ID,
-  type McVersionOption,
-  ServerSoftware,
-} from "@cubehold/shared";
+import { heapLimits, LOCAL_HOST_ID, type McVersionOption, ServerSoftware } from "@cubehold/shared";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc.js";
@@ -88,12 +82,6 @@ export const mcRouter = router({
                 });
               })
           : hostTotalMemoryMb();
-      let maxHeap = 512;
-      while (estimateProcessMemoryMb(maxHeap + 512) <= total - HOST_RESERVE_MB) maxHeap += 512;
-      return {
-        totalMemMb: total,
-        maxMemMb: Math.max(1024, maxHeap),
-        defaultMemMb: Math.min(4096, Math.max(1024, Math.floor(total / 4 / 512) * 512)),
-      };
+      return { totalMemMb: total, ...heapLimits(total) };
     }),
 });

@@ -78,12 +78,14 @@ the heap. The **Overview** shows both the process size and how much of the heap 
 
 In **Settings → Automation**:
 
-- **Restart after a crash**: up to 3 times in 10 minutes.
-- **Stop when nobody is online** after a number of minutes.
-- **Wake on join**: a stopped server keeps answering in the server list as "sleeping" and starts
-  when someone tries to join. They connect again once it has started.
+- **Restart the server after a crash**: up to 3 times in 10 minutes.
+- **Stop the server when nobody is online** after a number of minutes.
+- **Start the server when a player joins**: a stopped server keeps answering in the server list
+  as "sleeping" and starts when someone tries to join. They connect again once it has started.
 
-These work even while the panel is closed.
+These work even while the panel is closed. On a cloud VM there is one more setting, **What happens
+to the VM**, and servers there stop after 15 minutes by default to save money; see
+[Cloud servers](./cloud#when-nobody-plays).
 
 ## The getting started list
 

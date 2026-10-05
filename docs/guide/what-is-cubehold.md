@@ -7,7 +7,8 @@ control panel (think exaroton or Aternos), but the servers run on machines you o
 - **A VPS**: a small rented Linux server (from about €4 a month) that stays online when your
   computer is off. cubehold sets it up over SSH in a few minutes.
 - **A cloud VM** in your own Hetzner, DigitalOcean, Vultr, Linode or AWS account. cubehold creates
-  it, and can switch it off while nobody plays so you only pay for play time.
+  it, and can switch it off while nobody plays so you only pay for play time. A cost page shows what
+  you pay and why, and one button deletes everything cubehold made in the cloud.
 
 You open the panel in a browser and manage every server the same way, wherever it runs.
 

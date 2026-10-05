@@ -1,4 +1,4 @@
-import { estimateJvmOverheadMb, estimateProcessMemoryMb } from "@cubehold/shared";
+import { estimateJvmOverheadMb, estimateProcessMemoryMb, heapLimits } from "@cubehold/shared";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -13,7 +13,14 @@ import { formatMb } from "@/lib/utils";
 export function GeneralCard({ serverId, disabled }: { serverId: string; disabled?: boolean }) {
   const trpc = useTRPC();
   const server = useQuery(trpc.servers.get.queryOptions({ serverId }));
-  const limits = useQuery(trpc.mc.limits.queryOptions());
+  const hostId = server.data?.hostId;
+  // The server's own host; a cloud VM that is down falls back to its size.
+  const limits = useQuery(
+    trpc.mc.limits.queryOptions({ hostId: hostId ?? "local" }, { enabled: !!hostId, retry: false }),
+  );
+  const hosts = useQuery(trpc.hosts.list.queryOptions());
+  const host = hosts.data?.find((h) => h.id === hostId);
+  const vmMb = host?.cloud?.size.memoryMb ?? null;
   const [name, setName] = useState("");
   const [memoryMb, setMemoryMb] = useState(0);
   const [port, setPort] = useState(0);
@@ -53,7 +60,9 @@ export function GeneralCard({ serverId, disabled }: { serverId: string; disabled
     ...(jvmArgs.join("\n") !== s.extraJvmArgs.join("\n") ? { extraJvmArgs: jvmArgs } : {}),
   };
   const dirty = Object.keys(changes).length > 0;
-  const max = limits.data?.maxMemMb ?? 16384;
+  const max = limits.data?.maxMemMb ?? (vmMb ? heapLimits(vmMb).maxMemMb : 16384);
+  const totalMb = limits.data?.totalMemMb ?? vmMb;
+  const machine = host && host.kind !== "local" ? host.name : "This machine";
 
   return (
     <Card>
@@ -112,7 +121,7 @@ export function GeneralCard({ serverId, disabled }: { serverId: string; disabled
             <p className="text-xs text-muted-foreground">
               Java uses about {formatMb(estimateProcessMemoryMb(memoryMb))} in total: the heap plus
               roughly {formatMb(estimateJvmOverheadMb(memoryMb))} for itself.
-              {limits.data && ` This machine has ${formatMb(limits.data.totalMemMb)}.`}
+              {totalMb ? ` ${machine} has ${formatMb(totalMb)}.` : ""}
             </p>
           </div>
 

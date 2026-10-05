@@ -4,25 +4,37 @@ import {
   CloudError,
   type CloudProvider,
   type CloudRegion,
+  type CloudResource,
   type CloudSize,
   type CloudVm,
   costOf,
   createProvider,
   hostTag,
+  hourlyRate,
   type IdleMode,
   monthlyEstimate,
   PROVIDERS,
   type ProviderCredential,
   type ProviderDeps,
   type ProviderId,
+  type ResourceKind,
   type VmStatus,
 } from "@cubehold/providers";
-import type { AddCloudAccountInput, CreateCloudHostInput, ServerStatus } from "@cubehold/shared";
-import { eq, like } from "drizzle-orm";
+import {
+  type AddCloudAccountInput,
+  CLOUD_IDLE_STOP_MINUTES,
+  type CloudCleanupInput,
+  type CreateCloudHostInput,
+  heapLimits,
+  type ServerAutomation,
+  type ServerStatus,
+} from "@cubehold/shared";
+import { and, eq, like, sql } from "drizzle-orm";
 import { newId } from "../auth/session.js";
 import { type Db, schema } from "../db/index.js";
+import type { CloudUsageSize } from "../db/schema.js";
 import type { HostManager } from "../hosts/manager.js";
-import type { HostMeta, HostService, Job } from "../hosts/service.js";
+import { type HostMeta, type HostService, Job } from "../hosts/service.js";
 import { SshError, SshSession } from "../hosts/ssh.js";
 import type { RealtimeBus } from "../realtime/bus.js";
 import { decryptJson, encryptJson, type KeyVault } from "../security/crypto.js";
@@ -34,10 +46,49 @@ import {
   type ServerRow,
   type ServerService,
 } from "../servers/service.js";
+import {
+  bucketOf,
+  type CostSummary,
+  type LiveHost,
+  previousMonth,
+  splitByDay,
+  summarizeCosts,
+  type UsageRow,
+} from "./costs.js";
 import type { CloudHostState, CloudMeta, CloudView, PowerState, UsageMonth } from "./types.js";
 
-const { hosts: hostsTable, servers: serversTable, credentials } = schema;
+const { hosts: hostsTable, servers: serversTable, credentials, cloudUsage } = schema;
 type HostRow = typeof hostsTable.$inferSelect;
+
+/** Something found in a cloud account, and which host in the panel it belongs to. */
+export interface ScanItem extends CloudResource {
+  hostId: string | null;
+  hostName: string | null;
+  /** Part of a host the panel still runs (its VM, firewall, key or current snapshot). */
+  inUse: boolean;
+}
+
+export interface AccountScan {
+  accountId: string;
+  label: string;
+  provider: ProviderId;
+  providerLabel: string;
+  currency: "EUR" | "USD";
+  /** The account could not be read (token revoked, provider down…). */
+  error: string | null;
+  items: ScanItem[];
+}
+
+/** Cloud resources are deleted in this order: VMs hold firewalls and keys in use. */
+const DELETE_ORDER: ResourceKind[] = [
+  "vm",
+  "volume",
+  "snapshot",
+  "ip",
+  "firewall",
+  "ssh-key",
+  "tag",
+];
 
 interface StoredAccount {
   cred: ProviderCredential;
@@ -76,6 +127,10 @@ export class CloudService {
   #timer: NodeJS.Timeout | null = null;
   /** Pending cloud-state writes per host, chained so none is lost. */
   #writes = new Map<string, Promise<void>>();
+  /** The last clean-up, for its progress view. */
+  #cleanup: Job | null = null;
+  /** Hosts a clean-up is deleting: nothing may start or reconnect them. */
+  #deleting = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -96,6 +151,11 @@ export class CloudService {
     this.servers.setCloudHooks({
       gate: (row) => this.#gate(row),
       powersDown: async (row) => (await this.#hostRow(row.hostId))?.kind === "cloud",
+      defaults: async (hostId) => {
+        const host = await this.#hostRow(hostId);
+        const c = host && cloudOf(host);
+        return c ? savingAutomation(c.provider) : null;
+      },
     });
   }
 
@@ -119,7 +179,9 @@ export class CloudService {
     });
     this.#timer = setInterval(() => void this.#monitor(), MONITOR_MS);
     this.#timer.unref();
-    void this.#monitor();
+    void this.#seedLog()
+      .catch((err) => console.warn("[cloud] could not start the usage log:", errMessage(err)))
+      .finally(() => void this.#monitor());
   }
 
   dispose(): void {
@@ -230,6 +292,8 @@ export class CloudService {
         /** Three hours of play a day, with the VM off (or saved) the rest of the time. */
         threeHoursADay: monthlyEstimate(id, s, 3, idle).total,
         idleMode: idle,
+        /** Per hour while running, with the IPv4 address and a separately billed disk. */
+        hourly: hourlyRate(id, s, "running"),
       },
     }));
   }
@@ -244,6 +308,12 @@ export class CloudService {
     if (!size)
       throw new ServerError("VALIDATION", `${input.size} is not available in ${input.region}`);
     const { estimate: _e, ...plainSize } = size;
+    if (input.server && input.server.memoryMb > heapLimits(size.memoryMb).maxMemMb) {
+      throw new ServerError(
+        "VALIDATION",
+        `${size.label} has ${Math.round(size.memoryMb / 1024)} GB of memory, too little for a ${Math.round(input.server.memoryMb / 1024)} GB server. Pick a bigger size or less memory.`,
+      );
+    }
     const id = newId();
     const now = nowIso();
     const cloud: CloudMeta = {
@@ -280,6 +350,7 @@ export class CloudService {
           autoUpdates: input.autoUpdates,
           keysOnly: true,
         },
+        pendingServer: input.server ?? null,
       } satisfies HostMeta,
       cloud,
     });
@@ -584,7 +655,7 @@ export class CloudService {
     if (!server) return;
     const host = await this.#hostRow(server.hostId);
     const c = host && cloudOf(host);
-    if (!host || !c || c.power !== "running") return;
+    if (!host || !c || c.power !== "running" || this.#deleting.has(host.id)) return;
     // The server's own status is saved just after this event; the full check runs when the timer fires.
     const mode = server.settings?.automation?.vmIdle ?? "keep";
     if (mode === "keep") return;
@@ -636,6 +707,9 @@ export class CloudService {
     const host = await this.#hostRow(row.hostId);
     const c = host && cloudOf(host);
     if (!host || !c) return true;
+    if (this.#deleting.has(host.id)) {
+      throw new ServerError("BAD_STATE", "This server's VM is being deleted.");
+    }
     const pending = this.#idle.get(host.id);
     if (pending) {
       clearTimeout(pending);
@@ -655,7 +729,7 @@ export class CloudService {
       this.bus.system(
         row.id,
         c.power === "hibernated"
-          ? "The VM is saved as a snapshot; restoring it first (usually 2 to 5 minutes)."
+          ? "The VM was deleted and kept as a snapshot; making a new VM from it first (usually 2 to 5 minutes)."
           : "Starting the VM first (usually under a minute).",
       );
       void this.#bringUp(host.id).catch(() => {});
@@ -755,7 +829,7 @@ export class CloudService {
   async #monitor(): Promise<void> {
     for (const row of await this.#cloudRows()) {
       await this.#tick(row.id).catch(() => {});
-      if (this.hostAdmin.busy(row.id)) continue;
+      if (this.hostAdmin.busy(row.id) || this.#deleting.has(row.id)) continue;
       const c = cloudOf(row);
       if (!c || !this.vault.isUnlocked()) continue;
       // A running VM whose link was never (re)made, e.g. SSH was slow after a restore.
@@ -824,13 +898,456 @@ export class CloudService {
     }
   }
 
-  /** Add the time since the last tick to this month's usage. */
+  /** Add the time since the last tick to this month's usage and to the usage log. */
   async #tick(hostId: string): Promise<void> {
-    const row = await this.#hostRow(hostId);
-    const c = row && cloudOf(row);
-    if (!c) return;
-    const { usage, lastMonth } = advance(c, new Date());
-    await this.#setCloud(hostId, { usage, lastMonth }, false);
+    await this.#setCloud(hostId, {});
+  }
+
+  /** Add [lastAt, now) in the VM's current power state to the usage log, split by day. */
+  async #log(row: HostRow, c: CloudMeta, now: Date): Promise<void> {
+    const bucket = bucketOf(c.power);
+    const from = new Date(c.usage.lastAt);
+    if (!bucket || !(now.getTime() > from.getTime())) return;
+    const size = usageSize(c);
+    for (const { day, hours } of splitByDay(from, now)) {
+      const add = { running: 0, stopped: 0, hibernated: 0, snapshotGbHours: 0 };
+      add[bucket] = hours;
+      if (bucket === "hibernated") add.snapshotGbHours = hours * (c.snapshot?.sizeGb ?? 0);
+      await this.db
+        .insert(cloudUsage)
+        .values({
+          hostId: row.id,
+          day,
+          hostName: row.name,
+          accountId: c.accountId,
+          provider: c.provider,
+          region: c.region,
+          size,
+          ...add,
+        })
+        .onConflictDoUpdate({
+          target: [cloudUsage.hostId, cloudUsage.day],
+          set: {
+            hostName: row.name,
+            region: c.region,
+            size,
+            running: sql`${cloudUsage.running} + ${add.running}`,
+            stopped: sql`${cloudUsage.stopped} + ${add.stopped}`,
+            hibernated: sql`${cloudUsage.hibernated} + ${add.hibernated}`,
+            snapshotGbHours: sql`${cloudUsage.snapshotGbHours} + ${add.snapshotGbHours}`,
+            updatedAt: nowIso(),
+          },
+        });
+    }
+  }
+
+  /** Hosts from before the usage log: start it with this month's hours so far. */
+  async #seedLog(): Promise<void> {
+    const month = nowIso().slice(0, 7);
+    for (const row of await this.#cloudRows()) {
+      const c = cloudOf(row);
+      if (!c || c.usage.month !== month) continue;
+      const u = c.usage;
+      if (u.running + u.stopped + u.hibernated <= 0) continue;
+      const logged = await this.db
+        .select({ day: cloudUsage.day })
+        .from(cloudUsage)
+        .where(and(eq(cloudUsage.hostId, row.id), like(cloudUsage.day, `${month}-%`)))
+        .get();
+      if (logged) continue;
+      await this.db.insert(cloudUsage).values({
+        hostId: row.id,
+        day: u.lastAt.slice(0, 10),
+        hostName: row.name,
+        accountId: c.accountId,
+        provider: c.provider,
+        region: c.region,
+        size: usageSize(c),
+        running: u.running,
+        stopped: u.stopped,
+        hibernated: u.hibernated,
+        snapshotGbHours: u.hibernated * (c.snapshot?.sizeGb ?? 0),
+      });
+    }
+  }
+
+  // --- costs -------------------------------------------------------------------------------------
+
+  /** What the cloud cost in a month (this one by default), day by day and VM by VM. */
+  async costs(month = nowIso().slice(0, 7)): Promise<CostSummary> {
+    const now = new Date();
+    const prev = previousMonth(month);
+    const [rows, prevRows, monthRows, hostRows, serverRows, accountRows] = await Promise.all([
+      this.db
+        .select()
+        .from(cloudUsage)
+        .where(like(cloudUsage.day, `${month}-%`)),
+      this.db
+        .select()
+        .from(cloudUsage)
+        .where(like(cloudUsage.day, `${prev}-%`)),
+      this.db
+        .selectDistinct({ month: sql<string>`substr(${cloudUsage.day}, 1, 7)` })
+        .from(cloudUsage),
+      this.#cloudRows(),
+      this.db
+        .select({ id: serversTable.id, name: serversTable.name, hostId: serversTable.hostId })
+        .from(serversTable),
+      this.db
+        .select({ id: credentials.id, label: credentials.label })
+        .from(credentials)
+        .where(like(credentials.id, "cloud-%")),
+    ]);
+    const usage: UsageRow[] = rows.map((r) => ({ ...r }));
+    const live: LiveHost[] = [];
+    for (const row of hostRows) {
+      const c = cloudOf(row);
+      if (!c) continue;
+      // The time since the last tick is not in the log yet.
+      const bucket = bucketOf(c.power);
+      if (bucket && month === now.toISOString().slice(0, 7)) {
+        for (const { day, hours } of splitByDay(new Date(c.usage.lastAt), now)) {
+          if (!day.startsWith(month)) continue;
+          usage.push({
+            hostId: row.id,
+            day,
+            hostName: row.name,
+            accountId: c.accountId,
+            provider: c.provider,
+            region: c.region,
+            size: usageSize(c),
+            running: bucket === "running" ? hours : 0,
+            stopped: bucket === "stopped" ? hours : 0,
+            hibernated: bucket === "hibernated" ? hours : 0,
+            snapshotGbHours: bucket === "hibernated" ? hours * (c.snapshot?.sizeGb ?? 0) : 0,
+          });
+        }
+      }
+      live.push({
+        hostId: row.id,
+        name: row.name,
+        provider: c.provider,
+        accountLabel: accountRows.find((a) => a.id === c.accountId)?.label ?? null,
+        region: c.region,
+        size: usageSize(c),
+        power: c.power,
+        snapshotGb: c.snapshot?.sizeGb ?? 0,
+        servers: serverRows
+          .filter((s) => s.hostId === row.id)
+          .map((s) => ({ id: s.id, name: s.name })),
+        lastMonth: c.lastMonth,
+      });
+    }
+    // Rows for the same host and day (log + not yet logged) are added up.
+    const merged = new Map<string, UsageRow>();
+    for (const r of usage) {
+      const k = `${r.hostId}/${r.day}`;
+      const m = merged.get(k);
+      merged.set(
+        k,
+        m
+          ? {
+              ...m,
+              running: m.running + r.running,
+              stopped: m.stopped + r.stopped,
+              hibernated: m.hibernated + r.hibernated,
+              snapshotGbHours: m.snapshotGbHours + r.snapshotGbHours,
+            }
+          : r,
+      );
+    }
+    const months = [...new Set([now.toISOString().slice(0, 7), ...monthRows.map((m) => m.month)])]
+      .sort()
+      .reverse();
+    return summarizeCosts(month, [...merged.values()], prevRows, live, months, now);
+  }
+
+  // --- what is in the accounts, and cleaning it up ---------------------------------------------
+
+  /** Everything cubehold made in each connected account, and other things that cost money. */
+  async scan(accountIds?: string[]): Promise<{ at: string; accounts: AccountScan[] }> {
+    this.#requireVault();
+    const accounts = (await this.accounts()).filter(
+      (a) => !accountIds || accountIds.includes(a.id),
+    );
+    const hosts = await this.#cloudRows();
+    const out = await Promise.all(
+      accounts.map(async (a): Promise<AccountScan> => {
+        const base = {
+          accountId: a.id,
+          label: a.label,
+          provider: a.provider,
+          providerLabel: a.providerLabel,
+          currency: BILLING[a.provider].currency,
+        };
+        try {
+          const items = await (await this.#provider(a.id)).inventory();
+          const mine = hosts.filter((h) => cloudOf(h)?.accountId === a.id);
+          return { ...base, error: null, items: items.map((r) => linkItem(r, mine)) };
+        } catch (err) {
+          return { ...base, error: errMessage(err), items: [] };
+        }
+      }),
+    );
+    return { at: nowIso(), accounts: out };
+  }
+
+  /** Delete one thing no host in the panel uses (a leftover, or something the user made). */
+  async deleteResource(accountId: string, kind: ResourceKind, id: string) {
+    this.#requireVault();
+    await this.#accountRow(accountId);
+    const hosts = (await this.#cloudRows()).filter((h) => cloudOf(h)?.accountId === accountId);
+    const owner = hosts.find((h) => linkItem({ kind, id, tag: null } as CloudResource, [h]).inUse);
+    if (owner) {
+      throw new ServerError(
+        "BAD_STATE",
+        `This belongs to ${owner.name}. Delete that host instead, or use Clean up.`,
+      );
+    }
+    const p = await this.#provider(accountId);
+    await p.deleteResource({ kind, id });
+    return { deleted: true };
+  }
+
+  cleanupStatus() {
+    return this.#cleanup?.view ?? null;
+  }
+
+  /**
+   * Delete everything cubehold made in the chosen accounts: its cloud hosts
+   * with the servers on them, and anything it left behind. Runs in the
+   * background; cleanupStatus() shows the progress.
+   */
+  async startCleanup(input: CloudCleanupInput): Promise<{ started: true }> {
+    this.#requireVault();
+    if (this.#cleanup?.view.state === "running") {
+      throw new ServerError("BAD_STATE", "A clean-up is already running.");
+    }
+    for (const id of input.accountIds) await this.#accountRow(id);
+    const hosts = (await this.#cloudRows()).filter((h) =>
+      input.accountIds.includes(cloudOf(h)?.accountId ?? ""),
+    );
+    const busy = hosts.filter((h) => this.hostAdmin.busy(h.id));
+    if (busy.length > 0) {
+      throw new ServerError(
+        "BAD_STATE",
+        `Wait for ${busy.map((h) => h.name).join(", ")} to finish what it is doing, then clean up.`,
+      );
+    }
+    const job = new Job("cloud-cleanup", "remove", [
+      ["find", "Look at what is in the accounts"],
+      ["vms", "Delete the VMs"],
+      ["storage", "Delete snapshots and disks"],
+      ["network", "Delete firewalls, SSH keys and tags"],
+      ["panel", "Remove the cloud hosts and their servers from the panel"],
+      ["others", "Delete the other things you picked"],
+      ["check", "Check that nothing is left"],
+      ["accounts", "Disconnect the accounts"],
+    ]);
+    this.#cleanup = job;
+    for (const h of hosts) {
+      this.#deleting.add(h.id);
+      const t = this.#idle.get(h.id);
+      if (t) clearTimeout(t);
+      this.#idle.delete(h.id);
+      this.#pendingStart.delete(h.id);
+    }
+    void this.#runCleanup(job, input, hosts)
+      .then(
+        (problems) => job.finish(problems.length ? new Error(problems.join(" ")) : null),
+        (err) => job.finish(err),
+      )
+      .finally(() => {
+        for (const h of hosts) this.#deleting.delete(h.id);
+      });
+    return { started: true };
+  }
+
+  async #runCleanup(job: Job, input: CloudCleanupInput, hosts: HostRow[]): Promise<string[]> {
+    const problems: string[] = [];
+    // Per account: what to delete, by kind.
+    const plan = new Map<string, Map<ResourceKind, Map<string, string>>>();
+    const want = (accountId: string, kind: ResourceKind, id: string | null, name: string) => {
+      if (!id || id === "inline") return;
+      const acct = plan.get(accountId) ?? new Map<ResourceKind, Map<string, string>>();
+      plan.set(accountId, acct);
+      const ids = acct.get(kind) ?? new Map<string, string>();
+      acct.set(kind, ids);
+      ids.set(id, name);
+    };
+    const failedHosts = new Set<string>();
+    const hostOf = new Map<string, string>(); // "account/kind/id" -> host id
+    for (const h of hosts) {
+      const c = cloudOf(h) as CloudMeta;
+      this.hostAdmin.pause(h.id);
+      const own = (kind: ResourceKind, id: string | null) => {
+        if (!id || id === "inline") return;
+        want(c.accountId, kind, id, `${h.name}: ${kind}`);
+        hostOf.set(`${c.accountId}/${kind}/${id}`, h.id);
+      };
+      own("vm", c.vmId);
+      own("snapshot", c.snapshot?.imageId ?? null);
+      own("firewall", c.firewallId);
+      own("ssh-key", c.sshKeyId);
+    }
+
+    await job.soft("find", async () => {
+      const scan = await this.scan(input.accountIds);
+      let found = 0;
+      for (const a of scan.accounts) {
+        if (a.error) {
+          problems.push(`${a.label}: ${a.error}`);
+          job.line(`!! ${a.label}: ${a.error}`);
+          continue;
+        }
+        for (const r of a.items.filter((x) => x.ours)) {
+          found++;
+          want(a.accountId, r.kind, r.id, `${r.name} (${r.kind})`);
+          if (r.hostId) hostOf.set(`${a.accountId}/${r.kind}/${r.id}`, r.hostId);
+        }
+      }
+      return `${found} thing(s) made by cubehold`;
+    });
+
+    const providers = new Map<string, CloudProvider>();
+    const providerOf = async (accountId: string) => {
+      let p = providers.get(accountId);
+      if (!p) {
+        p = await this.#provider(accountId);
+        providers.set(accountId, p);
+      }
+      return p;
+    };
+    const run = async (
+      kinds: ResourceKind[],
+      after?: (p: CloudProvider, id: string) => Promise<void>,
+    ) => {
+      let done = 0;
+      const tasks: Array<Promise<void>> = [];
+      for (const [accountId, acct] of plan) {
+        for (const kind of DELETE_ORDER.filter((k) => kinds.includes(k))) {
+          for (const [id, name] of acct.get(kind) ?? []) {
+            tasks.push(
+              (async () => {
+                const p = await providerOf(accountId);
+                try {
+                  await deleteWithRetry(p, kind, id);
+                  if (after) await after(p, id);
+                  done++;
+                  job.line(`Deleted ${name}`);
+                } catch (err) {
+                  const host = hostOf.get(`${accountId}/${kind}/${id}`);
+                  if (host) failedHosts.add(host);
+                  problems.push(`Could not delete ${name}: ${errMessage(err)}`);
+                  job.line(`!! ${name}: ${errMessage(err)}`);
+                }
+              })(),
+            );
+          }
+          // Kinds go one after another (a VM holds its firewall); things of one kind together.
+          await Promise.all(tasks.splice(0));
+        }
+      }
+      return done;
+    };
+
+    await job.soft("vms", async () => {
+      const n = await run(["vm"], async (p, id) => {
+        const deadline = Date.now() + 5 * 60_000;
+        while (await p.getVm(id)) {
+          if (Date.now() > deadline) throw new Error("still being deleted after 5 minutes");
+          await sleep(5_000);
+        }
+      });
+      return n ? `${n} deleted` : "None";
+    });
+    await job.soft("storage", async () => {
+      const n = await run(["volume", "snapshot"]);
+      return n ? `${n} deleted` : "None";
+    });
+    await job.soft("network", async () => {
+      const n = await run(["ip", "firewall", "ssh-key", "tag"]);
+      return n ? `${n} deleted` : "None";
+    });
+
+    await job.soft("panel", async () => {
+      const gone: string[] = [];
+      let serverCount = 0;
+      for (const h of hosts) {
+        if (failedHosts.has(h.id)) {
+          await this.#setCloud(h.id, {
+            lastError: "The clean-up could not delete everything; see the clean-up log.",
+          }).catch(() => {});
+          continue;
+        }
+        const rows = await this.db
+          .select({ id: serversTable.id })
+          .from(serversTable)
+          .where(eq(serversTable.hostId, h.id));
+        for (const s of rows) await this.servers.forget(s.id);
+        serverCount += rows.length;
+        // Count up to now in the usage log before the host goes.
+        await this.#setCloud(h.id, {}).catch(() => {});
+        await this.hostAdmin.forget(h.id);
+        gone.push(h.name);
+      }
+      if (failedHosts.size > 0) {
+        job.line(`Kept in the panel because something failed: ${failedHosts.size} host(s)`);
+      }
+      return gone.length
+        ? `${gone.join(", ")} removed, with ${serverCount} server(s)`
+        : "No cloud hosts in the panel";
+    });
+
+    if (input.others.length === 0) job.skip("others", "None picked");
+    else
+      await job.soft("others", async () => {
+        let n = 0;
+        for (const o of input.others) {
+          if (!input.accountIds.includes(o.accountId)) continue;
+          try {
+            await deleteWithRetry(await providerOf(o.accountId), o.kind, o.id);
+            n++;
+            job.line(`Deleted ${o.kind} ${o.id}`);
+          } catch (err) {
+            problems.push(`Could not delete ${o.kind} ${o.id}: ${errMessage(err)}`);
+            job.line(`!! ${o.kind} ${o.id}: ${errMessage(err)}`);
+          }
+        }
+        return `${n} of ${input.others.length} deleted`;
+      });
+
+    await job.soft("check", async () => {
+      // Providers take a moment to forget deleted things.
+      await sleep(3_000);
+      const scan = await this.scan(input.accountIds);
+      const left = scan.accounts.flatMap((a) =>
+        a.items.filter((r) => r.ours && r.kind !== "tag").map((r) => `${r.name} (${a.label})`),
+      );
+      const others = scan.accounts.flatMap((a) =>
+        a.items.filter((r) => !r.ours && (r.monthly ?? 1) > 0),
+      );
+      if (others.length > 0) {
+        job.line(
+          `Not made by cubehold and left alone: ${others.map((r) => `${r.name} (${r.kind})`).join(", ")}`,
+        );
+      }
+      if (left.length > 0) throw new Error(`Still there: ${left.join(", ")}`);
+      return others.length
+        ? `Nothing of cubehold's is left; ${others.length} other thing(s) still cost money`
+        : "Nothing is left";
+    });
+
+    if (!input.disconnect) job.skip("accounts", "Kept");
+    else
+      await job.soft("accounts", async () => {
+        const kept: string[] = [];
+        for (const id of input.accountIds) {
+          await this.removeAccount(id).catch(() => kept.push(id));
+        }
+        return kept.length ? `${kept.length} kept: hosts still use them` : "Disconnected";
+      });
+    return problems;
   }
 
   // --- views ---------------------------------------------------------------------------------------
@@ -870,6 +1387,7 @@ export class CloudService {
         diskGb: c.size.diskGb,
         arch: c.size.arch,
         burstable: c.size.burstable,
+        noMonthlyCap: c.size.noMonthlyCap || !(c.size.priceMonthly > 0),
       },
       price: {
         hourly: c.size.priceHourly,
@@ -1027,7 +1545,13 @@ export class CloudService {
         const row = await this.#hostRow(hostId);
         if (!row?.cloud) return;
         let cloud = { ...row.cloud };
-        if (tick) cloud = { ...cloud, ...advance(cloud, new Date()) };
+        if (tick) {
+          const now = new Date();
+          await this.#log(row, cloud, now).catch((err) =>
+            console.warn(`[cloud] usage log for ${hostId}:`, errMessage(err)),
+          );
+          cloud = { ...cloud, ...advance(cloud, now) };
+        }
         await this.db
           .update(hostsTable)
           .set({ cloud: { ...cloud, ...patch }, updatedAt: nowIso() })
@@ -1087,6 +1611,61 @@ export function advance(
   if (c.power !== "missing") usage[bucket] += hours;
   usage.lastAt = iso;
   return { usage, lastMonth };
+}
+
+/**
+ * Idle settings for a new server on a cloud VM: stop when nobody plays, then
+ * take the VM down. A stopped VM still costs in full except on AWS, so
+ * elsewhere it is deleted and kept as a snapshot.
+ */
+export function savingAutomation(provider: ProviderId): Partial<ServerAutomation> {
+  return {
+    idleStopMinutes: CLOUD_IDLE_STOP_MINUTES,
+    vmIdle: PROVIDERS[provider].snapshots ? "hibernate" : "stop",
+  };
+}
+
+function usageSize(c: CloudMeta): CloudUsageSize {
+  return {
+    id: c.size.id,
+    label: c.size.label,
+    priceHourly: c.size.priceHourly,
+    priceMonthly: c.size.priceMonthly,
+    noMonthlyCap: c.size.noMonthlyCap || !(c.size.priceMonthly > 0),
+    diskGb: c.size.diskGb,
+    currency: c.size.currency,
+  };
+}
+
+/** Which panel host a resource belongs to, and whether that host still uses it. */
+function linkItem(r: CloudResource, hosts: HostRow[]): ScanItem {
+  for (const h of hosts) {
+    const c = cloudOf(h);
+    if (!c) continue;
+    const current: Partial<Record<ResourceKind, string | null>> = {
+      vm: c.vmId,
+      firewall: c.firewallId,
+      "ssh-key": c.sshKeyId,
+      snapshot: c.snapshot?.imageId ?? null,
+      tag: c.tag,
+    };
+    if (current[r.kind] === r.id) return { ...r, hostId: h.id, hostName: h.name, inUse: true };
+  }
+  const owner = r.tag ? hosts.find((h) => cloudOf(h)?.tag === r.tag) : undefined;
+  return { ...r, hostId: owner?.id ?? null, hostName: owner?.name ?? null, inUse: false };
+}
+
+/** Delete, retrying a few times: AWS keeps a security group busy until its instance is gone. */
+async function deleteWithRetry(p: CloudProvider, kind: ResourceKind, id: string): Promise<void> {
+  const tries = kind === "firewall" || kind === "volume" ? 6 : 2;
+  for (let i = 1; ; i++) {
+    try {
+      return await p.deleteResource({ kind, id });
+    } catch (err) {
+      if (i >= tries || (err instanceof CloudError && err.code === "permission")) throw err;
+      await sleep(10_000);
+    }
+  }
 }
 
 function vmName(name: string, tag: string): string {

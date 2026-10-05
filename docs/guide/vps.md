@@ -18,7 +18,7 @@ computer is off, and players connect straight to its address without tunnels.
    - fail2ban and automatic security updates,
    - optionally, SSH logins with keys only.
 
-Then choose the VPS as the **Host** when creating a server, or **move** an existing server to it
+Then choose the VPS under **Where it runs** when creating a server, or **move** an existing server to it
 from the server's Settings tab. Moving copies the world, history and backups.
 
 ## Good to know

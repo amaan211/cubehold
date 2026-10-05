@@ -1,6 +1,6 @@
 import type { ServerAutomation, ServerNotifications } from "@cubehold/shared";
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import type { CloudMeta } from "../cloud/types.js";
 
 export interface ServerSettings {
@@ -213,6 +213,43 @@ export const playerSessions = sqliteTable(
     leftAt: text("left_at"),
   },
   (t) => [index("player_sessions_server_name_idx").on(t.serverId, t.name)],
+);
+
+/** The price list entry a cloud VM was created with, kept for costing after it is gone. */
+export interface CloudUsageSize {
+  id: string;
+  label: string;
+  priceHourly: number;
+  priceMonthly: number;
+  noMonthlyCap?: boolean;
+  diskGb: number;
+  currency: "EUR" | "USD";
+}
+
+/**
+ * Hours each cloud VM spent running, stopped or saved as a snapshot, per UTC
+ * day. Rows stay after the host is deleted so the cost page can still say
+ * what the month cost and why.
+ */
+export const cloudUsage = sqliteTable(
+  "cloud_usage",
+  {
+    hostId: text("host_id").notNull(),
+    /** YYYY-MM-DD in UTC. */
+    day: text("day").notNull(),
+    hostName: text("host_name").notNull(),
+    accountId: text("account_id"),
+    provider: text("provider").notNull(),
+    region: text("region"),
+    size: text("size", { mode: "json" }).$type<CloudUsageSize>().notNull(),
+    running: real("running").notNull().default(0),
+    stopped: real("stopped").notNull().default(0),
+    hibernated: real("hibernated").notNull().default(0),
+    /** Snapshot storage while saved: GB × hours. */
+    snapshotGbHours: real("snapshot_gb_hours").notNull().default(0),
+    updatedAt: timestamps.updatedAt,
+  },
+  (t) => [primaryKey({ columns: [t.hostId, t.day] }), index("cloud_usage_day_idx").on(t.day)],
 );
 
 export const auditLog = sqliteTable(

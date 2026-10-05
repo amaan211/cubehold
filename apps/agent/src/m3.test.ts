@@ -9,7 +9,12 @@ import { parseFunnelStatus, parseTailscaleStatus } from "./tailscale.js";
 import { TunnelProcess } from "./tunnel-process.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cubehold-m3-"));
-afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+// Windows holds files of just-stopped child processes for a moment.
+afterAll(() => {
+  try {
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  } catch {}
+});
 
 /** Stands in for playitd: behaves according to the secret it is given. */
 const fakePlayit = path.join(tmp, "fake-playitd.mjs");

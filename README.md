@@ -24,7 +24,8 @@ run on machines you own or rent. There is no account with us and no subscription
   Cloudflare Tunnel, with a test from the internet.
 - **Safe by default**: a security score with one-click fixes, and a firewall that only opens your
   game ports.
-- **Cheaper cloud servers**: what each VM costs, and the VM switches off while nobody plays.
+- **Cloud servers on your own account**: create the VM and the server in one go, see what you pay
+  and why, switch the VM off while nobody plays, and delete it all with one button.
 - **Servers keep running** when the panel is closed or updated.
 - Discord notifications, a phone layout, and a getting-started checklist.
 

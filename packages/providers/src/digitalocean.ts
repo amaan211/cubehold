@@ -1,14 +1,17 @@
 import { continentOf, RestClient } from "./http.js";
+import { alwaysOnMonthly, BILLING } from "./pricing.js";
 import {
   CloudError,
   type CloudProvider,
   type CloudRegion,
+  type CloudResource,
   type CloudSize,
   type CloudVm,
   type CreateVmRequest,
   type FetchLike,
   type FirewallPort,
   type SnapshotState,
+  tagIn,
 } from "./types.js";
 
 interface DoDroplet {
@@ -27,6 +30,19 @@ interface DoFirewall {
   tags: string[];
   droplet_ids: number[];
 }
+
+interface DoListedDroplet extends DoDroplet {
+  name: string;
+  tags: string[];
+  size_slug: string;
+  size?: { price_monthly: number; price_hourly: number; disk: number };
+  region?: { slug: string };
+}
+
+/** An unassigned reserved IPv4 address, per month. */
+const RESERVED_IP_MONTHLY = 5;
+/** Volumes (block storage), per GB and month. */
+const VOLUME_PER_GB_MONTH = 0.1;
 
 const ALL = { addresses: ["0.0.0.0/0", "::/0"] };
 const OUTBOUND = [
@@ -232,6 +248,134 @@ export class DigitalOceanProvider implements CloudProvider {
   deleteSnapshot(imageId: string): Promise<void> {
     return this.#api.del(`/snapshots/${imageId}`);
   }
+
+  async inventory(): Promise<CloudResource[]> {
+    const [droplets, snapshots, firewalls, keys, tags, volumes, ips] = await Promise.all([
+      this.#all<DoListedDroplet>("/droplets", "droplets"),
+      this.#all<{ id: string | number; name: string; size_gigabytes: number; regions: string[] }>(
+        "/snapshots?resource_type=droplet",
+        "snapshots",
+      ),
+      this.#all<{ id: string; name: string }>("/firewalls", "firewalls"),
+      this.#all<{ id: number; name: string }>("/account/keys", "ssh_keys"),
+      this.#all<{ name: string }>("/tags", "tags"),
+      this.#all<{
+        id: string;
+        name: string;
+        size_gigabytes: number;
+        droplet_ids: number[];
+        region?: { slug: string };
+      }>("/volumes", "volumes"),
+      this.#all<{ ip: string; droplet: unknown; region?: { slug: string } }>(
+        "/reserved_ips",
+        "reserved_ips",
+      ),
+    ]);
+    const out: CloudResource[] = [];
+    for (const d of droplets) {
+      const tag = d.tags.find((t) => tagIn(t) === t) ?? null;
+      out.push({
+        kind: "vm",
+        id: String(d.id),
+        name: d.name,
+        region: d.region?.slug ?? null,
+        ours: d.tags.includes("cubehold") || !!tag,
+        tag,
+        detail: `${d.size_slug}, ${d.status === "active" ? "running" : d.status}`,
+        monthly: d.size
+          ? alwaysOnMonthly("digitalocean", {
+              priceHourly: d.size.price_hourly,
+              priceMonthly: d.size.price_monthly,
+              diskGb: d.size.disk,
+            })
+          : null,
+      });
+    }
+    for (const sn of snapshots) {
+      out.push({
+        kind: "snapshot",
+        id: String(sn.id),
+        name: sn.name,
+        region: sn.regions[0] ?? null,
+        ours: !!tagIn(sn.name),
+        tag: tagIn(sn.name),
+        detail: `${sn.size_gigabytes} GB`,
+        monthly: sn.size_gigabytes * BILLING.digitalocean.snapshotPerGbMonth,
+      });
+    }
+    for (const f of firewalls) {
+      if (tagIn(f.name)) out.push(free("firewall", f.id, f.name));
+    }
+    for (const k of keys) {
+      if (tagIn(k.name)) out.push(free("ssh-key", String(k.id), k.name));
+    }
+    for (const t of tags) {
+      if (tagIn(t.name) === t.name) out.push(free("tag", t.name, t.name));
+    }
+    for (const v of volumes) {
+      out.push({
+        kind: "volume",
+        id: v.id,
+        name: v.name,
+        region: v.region?.slug ?? null,
+        ours: !!tagIn(v.name),
+        tag: tagIn(v.name),
+        detail: `${v.size_gigabytes} GB${v.droplet_ids.length === 0 ? ", not attached" : ""}`,
+        monthly: v.size_gigabytes * VOLUME_PER_GB_MONTH,
+      });
+    }
+    for (const ip of ips) {
+      if (ip.droplet) continue; // free while assigned
+      out.push({
+        kind: "ip",
+        id: ip.ip,
+        name: ip.ip,
+        region: ip.region?.slug ?? null,
+        ours: false,
+        tag: null,
+        detail: "Reserved IP, not assigned",
+        monthly: RESERVED_IP_MONTHLY,
+      });
+    }
+    return out;
+  }
+
+  async deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void> {
+    switch (r.kind) {
+      case "vm":
+        return this.deleteVm(r.id);
+      case "snapshot":
+        return this.deleteSnapshot(r.id);
+      case "firewall":
+        return this.deleteFirewall(r.id);
+      case "ssh-key":
+        return this.deleteSshKey(r.id);
+      case "tag":
+        return this.#api.del(`/tags/${encodeURIComponent(r.id)}`);
+      case "volume":
+        return this.#api.del(`/volumes/${r.id}`);
+      case "ip":
+        return this.#api.del(`/reserved_ips/${r.id}`);
+    }
+  }
+
+  async #all<T>(path: string, key: string): Promise<T[]> {
+    const [base, search] = path.split("?");
+    const filter = Object.fromEntries(new URLSearchParams(search ?? ""));
+    const out: T[] = [];
+    for (let page = 1; page < 50; page++) {
+      const r = await this.#api.get<
+        Record<string, unknown> & { links?: { pages?: { next?: string } } }
+      >(base as string, { ...filter, per_page: 200, page });
+      out.push(...((r[key] as T[] | undefined) ?? []));
+      if (!r.links?.pages?.next) break;
+    }
+    return out;
+  }
+}
+
+function free(kind: CloudResource["kind"], id: string, name: string): CloudResource {
+  return { kind, id, name, region: null, ours: true, tag: tagIn(name), detail: null, monthly: 0 };
 }
 
 function inbound(ports: FirewallPort[]) {

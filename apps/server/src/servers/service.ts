@@ -153,6 +153,7 @@ export class ServerService {
   #afterInstall = new Map<string, AfterInstall>();
   #startGate: ((row: ServerRow) => Promise<boolean>) | null = null;
   #vmPowersDown: ((row: ServerRow) => Promise<boolean>) | null = null;
+  #cloudDefaults: ((hostId: string) => Promise<Partial<ServerAutomation> | null>) | null = null;
   readonly events = new EventEmitter<ServiceEvents>();
 
   constructor(
@@ -289,7 +290,7 @@ export class ServerService {
       directory,
       settings: {
         onlineMode: input.onlineMode,
-        automation: DEFAULT_AUTOMATION,
+        automation: { ...DEFAULT_AUTOMATION, ...(await this.cloudAutomation(input.hostId)) },
         ...(extra.loaderVersion ? { loaderVersion: extra.loaderVersion } : {}),
         ...(extra.modpack ? { modpack: extra.modpack } : {}),
       },
@@ -307,7 +308,7 @@ export class ServerService {
   async update(input: UpdateServerInput) {
     const row = await this.row(input.serverId);
     this.assertIdle(row);
-    const agent = this.agentOf(row);
+    // Only memory and port need the host; the rest saves even while a cloud VM is down.
     const running = ACTIVE.includes(row.status as ServerStatus);
     const changes: Partial<ServerRow> = {};
     const settings = { ...(row.settings ?? {}) };
@@ -315,7 +316,7 @@ export class ServerService {
 
     if (input.name !== undefined && input.name !== row.name) changes.name = input.name;
     if (input.memoryMb !== undefined && input.memoryMb !== row.memoryMb) {
-      await this.#assertMemoryFits(agent, input.memoryMb);
+      await this.#assertMemoryFits(this.agentOf(row), input.memoryMb);
       changes.memoryMb = input.memoryMb;
       notes.push("memory");
     }
@@ -347,7 +348,14 @@ export class ServerService {
       .set({ ...changes, settings, updatedAt: nowIso() })
       .where(eq(servers.id, row.id));
     if (input.automation) {
-      await agent.setPolicy(row.id, await this.#policy({ ...row, settings }));
+      // A server that is not running gets its policy with the next start.
+      let agent: AgentApi | null = null;
+      try {
+        agent = this.agentOf(row);
+      } catch (err) {
+        if (running) throw err;
+      }
+      await agent?.setPolicy(row.id, await this.#policy({ ...row, settings }));
     }
     if (running && notes.length > 0) {
       this.bus.system(row.id, `Changed ${notes.join(", ")}; restart the server to apply.`);
@@ -967,6 +975,21 @@ export class ServerService {
     } finally {
       this.#deleting.delete(serverId);
     }
+  }
+
+  /**
+   * Drop a server whose machine is gone (its cloud VM was deleted): only the
+   * panel's records go, since there are no files left to delete.
+   */
+  async forget(serverId: string): Promise<void> {
+    this.#installing.delete(serverId);
+    this.#busy.delete(serverId);
+    this.#reporters.delete(serverId);
+    this.#afterInstall.delete(serverId);
+    // Backups, schedules and player history rows go with it (ON DELETE CASCADE).
+    await this.db.delete(servers).where(eq(servers.id, serverId));
+    this.bus.forget(serverId);
+    this.events.emit("removed", serverId);
   }
 
   async #export(
@@ -1616,9 +1639,19 @@ export class ServerService {
   setCloudHooks(hooks: {
     gate: (row: ServerRow) => Promise<boolean>;
     powersDown: (row: ServerRow) => Promise<boolean>;
+    defaults: (hostId: string) => Promise<Partial<ServerAutomation> | null>;
   }): void {
     this.#startGate = hooks.gate;
     this.#vmPowersDown = hooks.powersDown;
+    this.#cloudDefaults = hooks.defaults;
+  }
+
+  /**
+   * On a cloud VM the defaults save money: stop when nobody plays and take
+   * the VM down. Empty for any other host.
+   */
+  async cloudAutomation(hostId: string): Promise<Partial<ServerAutomation>> {
+    return (await this.#cloudDefaults?.(hostId).catch(() => null)) ?? {};
   }
 
   async #policy(row: ServerRow): Promise<AgentPolicy> {

@@ -63,7 +63,10 @@ export interface CloudView {
   providerLabel: string;
   accountLabel: string | null;
   region: string;
-  size: Pick<CloudSize, "id" | "label" | "vcpus" | "memoryMb" | "diskGb" | "arch" | "burstable">;
+  size: Pick<
+    CloudSize,
+    "id" | "label" | "vcpus" | "memoryMb" | "diskGb" | "arch" | "burstable" | "noMonthlyCap"
+  >;
   price: { hourly: number; monthly: number; currency: "EUR" | "USD"; estimate: boolean };
   power: PowerState;
   powerSince: string;

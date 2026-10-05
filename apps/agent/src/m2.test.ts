@@ -11,7 +11,12 @@ import { Sleeper } from "./sleeper.js";
 import type { AgentEvent, LaunchRequest } from "./types.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cubehold-m2-test-"));
-afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+// Windows holds files of just-stopped child processes for a moment.
+afterAll(() => {
+  try {
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  } catch {}
+});
 
 async function freePort(): Promise<number> {
   const s = net.createServer();

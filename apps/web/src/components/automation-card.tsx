@@ -1,18 +1,28 @@
-import type { ServerAutomation } from "@cubehold/shared";
+import { alwaysOnMonthly, hourlyRate } from "@cubehold/providers/pricing";
+import { CLOUD_IDLE_STOP_MINUTES, type ServerAutomation } from "@cubehold/shared";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CloudOff, Moon, RotateCw, Timer } from "lucide-react";
+import { CloudOff, Moon, PiggyBank, RotateCw, Timer } from "lucide-react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { errorMessage, queryClient, useTRPC } from "@/lib/trpc";
+import { formatMoney } from "@/lib/utils";
 
 const IDLE_OPTIONS = [0, 5, 10, 15, 30, 60, 120];
 
+const VM_CHOICE: Record<ServerAutomation["vmIdle"], string> = {
+  keep: "Keep it running",
+  hibernate: "Delete it, keep a snapshot",
+  stop: "Stop it, keep its disk",
+};
+
 /**
- * Crash restarts, idle stop and wake-on-join. The agent applies these right
- * away, even to a running server, and keeps doing so with the panel closed.
+ * Crash restarts, idle stop and wake-on-join, and on a cloud VM what happens
+ * to the VM. The agent applies these right away, even to a running server,
+ * and keeps doing so with the panel closed.
  */
 export function AutomationCard({ serverId, disabled }: { serverId: string; disabled?: boolean }) {
   const trpc = useTRPC();
@@ -35,11 +45,31 @@ export function AutomationCard({ serverId, disabled }: { serverId: string; disab
   const set = (patch: Partial<ServerAutomation>) => save.mutate({ serverId, automation: patch });
   const busy = disabled || save.isPending;
   const vmDown = !!cloud && a.vmIdle !== "keep";
-  const money = (n: number) =>
-    new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: cloud?.price.currency ?? "USD",
-    }).format(n);
+
+  const cur = cloud?.price.currency ?? "USD";
+  const listed = cloud && {
+    priceHourly: cloud.price.hourly,
+    priceMonthly: cloud.price.monthly,
+    diskGb: cloud.size.diskGb,
+    noMonthlyCap: cloud.size.noMonthlyCap,
+  };
+  const perHour =
+    cloud && listed ? formatMoney(hourlyRate(cloud.provider, listed, "running"), cur) : "";
+  const perMonth = cloud && listed ? formatMoney(alwaysOnMonthly(cloud.provider, listed), cur) : "";
+  const savingMode = cloud?.idleModes.find((m) => m !== "keep") ?? "keep";
+  const saving = !!cloud && a.idleStopMinutes > 0 && a.vmIdle !== "keep";
+
+  const vmText = !cloud
+    ? ""
+    : a.idleStopMinutes === 0
+      ? "Applies once the server stops when nobody is online (above)."
+      : a.vmIdle === "hibernate"
+        ? `2 minutes after the last server on this VM stops, cubehold saves the VM's disk as a snapshot and then deletes the VM. Until the server starts again you pay only for the snapshot (${formatMoney(cloud.snapshotPerGbMonth, cur)} per GB a month) instead of ${perHour} an hour. Your worlds are in the snapshot: Start makes a new VM from it in 2 to 5 minutes, usually at a new IP address.`
+        : a.vmIdle === "stop"
+          ? `2 minutes after the last server on this VM stops, cubehold shuts the VM down without deleting it. ${cloud.providerLabel} then bills only its disk. Start boots it again in about a minute, usually at a new IP address.`
+          : cloud.stopSavesMoney
+            ? `The VM keeps running, and billing ${perHour} an hour, while nobody plays.`
+            : `The VM keeps running, and billing ${perHour} an hour, while nobody plays. ${cloud.providerLabel} bills a stopped VM in full, so deleting it and keeping a snapshot is what saves money.`;
 
   return (
     <Card>
@@ -50,10 +80,31 @@ export function AutomationCard({ serverId, disabled }: { serverId: string; disab
         </CardDescription>
       </CardHeader>
       <CardContent className="divide-y divide-border">
+        {cloud && !saving && (
+          <div className="mb-3 flex flex-col gap-3 rounded-lg bg-muted/60 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <p className="flex gap-2">
+              <PiggyBank className="mt-0.5 size-4 shrink-0 text-primary" />
+              <span>
+                This server's VM runs all the time, about {perMonth} a month. The money-saving
+                settings stop the server after {CLOUD_IDLE_STOP_MINUTES} minutes with nobody online
+                and then{" "}
+                {savingMode === "hibernate" ? "delete the VM, keeping a snapshot" : "stop the VM"}.
+              </span>
+            </p>
+            <Button
+              size="sm"
+              className="shrink-0"
+              disabled={busy}
+              onClick={() => set({ idleStopMinutes: CLOUD_IDLE_STOP_MINUTES, vmIdle: savingMode })}
+            >
+              Use the money-saving settings
+            </Button>
+          </div>
+        )}
         <Row
           icon={<RotateCw className="size-4" />}
           id="auto-restart"
-          label="Restart after a crash"
+          label="Restart the server after a crash"
           description="Up to 3 times in 10 minutes, waiting 10 s, 30 s, then 60 s. Not for problems a restart cannot fix, like a taken port."
         >
           <Switch
@@ -66,8 +117,12 @@ export function AutomationCard({ serverId, disabled }: { serverId: string; disab
         <Row
           icon={<Timer className="size-4" />}
           id="idle-stop"
-          label="Stop when nobody plays"
-          description="Saves CPU and memory (and money, on a cloud machine) while the server is empty."
+          label="Stop the server when nobody is online"
+          description={
+            cloud
+              ? "The Minecraft server stops after this long with no players. What then happens to the VM is set below."
+              : "The Minecraft server stops after this long with no players, freeing CPU and memory."
+          }
         >
           <Select
             id="idle-stop"
@@ -89,11 +144,13 @@ export function AutomationCard({ serverId, disabled }: { serverId: string; disab
         <Row
           icon={<Moon className="size-4" />}
           id="wake"
-          label="Start when a player joins"
+          label="Start the server when a player joins"
           description={
-            a.idleStopMinutes > 0
-              ? "After an idle stop the server shows as sleeping in the server list. The first player to join starts it and reconnects about 30 seconds later."
-              : "Works together with stopping when nobody plays."
+            vmDown
+              ? "Not possible while the VM is down: nothing is left to answer the player. Start the server from the panel instead."
+              : a.idleStopMinutes > 0
+                ? "After an idle stop the server shows as sleeping in the server list. The first player to join starts it and reconnects about 30 seconds later."
+                : "Works together with stopping when nobody is online."
           }
         >
           <Switch
@@ -107,33 +164,19 @@ export function AutomationCard({ serverId, disabled }: { serverId: string; disab
           <Row
             icon={<CloudOff className="size-4" />}
             id="vm-idle"
-            label="Then turn the VM off"
-            description={
-              a.idleStopMinutes === 0
-                ? "Works together with stopping when nobody plays."
-                : a.vmIdle === "hibernate"
-                  ? `Once no server here runs, the VM is saved as a snapshot and deleted: it costs only storage (${money(cloud.snapshotPerGbMonth)} per GB a month) until you press Start, which restores it in 2 to 5 minutes at a new address.`
-                  : a.vmIdle === "stop"
-                    ? `Once no server here runs, the VM is stopped: ${cloud.providerLabel} then only bills its disk. Start boots it again in about a minute; players cannot wake it by joining.`
-                    : cloud.stopSavesMoney
-                      ? "The VM keeps running (and billing) while the server sleeps."
-                      : `${cloud.providerLabel} bills a stopped VM in full, so saving it as a snapshot is what saves money.`
-            }
+            label="What happens to the VM"
+            description={vmText}
           >
             <Select
               id="vm-idle"
-              className="w-44"
+              className="w-52"
               value={a.vmIdle}
               disabled={busy || a.idleStopMinutes === 0}
               onChange={(e) => set({ vmIdle: e.target.value as ServerAutomation["vmIdle"] })}
             >
               {cloud.idleModes.map((m) => (
                 <option key={m} value={m}>
-                  {m === "keep"
-                    ? "Keep it running"
-                    : m === "stop"
-                      ? "Stop the VM"
-                      : "Save and delete"}
+                  {VM_CHOICE[m]}
                 </option>
               ))}
             </Select>

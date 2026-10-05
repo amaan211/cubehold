@@ -19,12 +19,13 @@ import { useServerLive } from "@/lib/realtime";
 import { errorMessage, queryClient, useTRPC } from "@/lib/trpc";
 
 export const Route = createFileRoute("/_app/servers/$id/settings")({
+  // Prefetch only: while a cloud VM is down these fail, and the rest of the page still works.
   loader: ({ context, params }) =>
     Promise.all([
-      context.queryClient.ensureQueryData(
+      context.queryClient.prefetchQuery(
         context.trpc.servers.properties.queryOptions({ serverId: params.id }),
       ),
-      context.queryClient.ensureQueryData(
+      context.queryClient.prefetchQuery(
         context.trpc.servers.versionInfo.queryOptions({ serverId: params.id }),
       ),
     ]),
@@ -79,9 +80,9 @@ function Settings() {
     }),
   );
 
-  if (!props.data) return null;
+  const data = props.data;
   const byGroup = new Map<string, PropertySpec[]>();
-  for (const s of props.data.specs) byGroup.set(s.group, [...(byGroup.get(s.group) ?? []), s]);
+  for (const s of data?.specs ?? []) byGroup.set(s.group, [...(byGroup.get(s.group) ?? []), s]);
 
   return (
     <div className="space-y-6">
@@ -91,76 +92,86 @@ function Settings() {
       <VersionCard serverId={id} />
       <AuthCard serverId={id} disabled={busy} />
       <MoveCard serverId={id} disabled={busy} />
-      <form
-        className="space-y-6"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (dirty) save.mutate({ serverId: id, values: changed });
-        }}
-      >
-        <div className="flex items-center justify-between gap-4 pt-2">
-          <div>
-            <h2 className="text-base font-semibold">server.properties</h2>
-            <p className="text-sm text-muted-foreground">
-              Comments and keys not shown here are preserved.
-              {props.data.requiresRestart
-                ? " The server is running, so changes apply after a restart."
-                : ""}
-            </p>
+      {!data && props.error && (
+        <Card>
+          <CardHeader>
+            <CardTitle>server.properties</CardTitle>
+            <CardDescription>{errorMessage(props.error)}</CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+      {data && (
+        <form
+          className="space-y-6"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (dirty) save.mutate({ serverId: id, values: changed });
+          }}
+        >
+          <div className="flex items-center justify-between gap-4 pt-2">
+            <div>
+              <h2 className="text-base font-semibold">server.properties</h2>
+              <p className="text-sm text-muted-foreground">
+                Comments and keys not shown here are preserved.
+                {data.requiresRestart
+                  ? " The server is running, so changes apply after a restart."
+                  : ""}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!dirty}
+                onClick={() => setDraft(props.data?.values ?? {})}
+              >
+                Discard
+              </Button>
+              <Button type="submit" disabled={!dirty || save.isPending || busy}>
+                {save.isPending
+                  ? "Saving…"
+                  : `Save${dirty ? ` (${Object.keys(changed).length})` : ""}`}
+              </Button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!dirty}
-              onClick={() => setDraft(props.data?.values ?? {})}
-            >
-              Discard
-            </Button>
-            <Button type="submit" disabled={!dirty || save.isPending || busy}>
-              {save.isPending
-                ? "Saving…"
-                : `Save${dirty ? ` (${Object.keys(changed).length})` : ""}`}
-            </Button>
-          </div>
-        </div>
 
-        {GROUPS.map((group) => (
-          <Card key={group}>
-            <CardHeader>
-              <CardTitle>{group}</CardTitle>
-            </CardHeader>
-            <CardContent className="divide-y divide-border">
-              {byGroup.get(group)?.map((spec) => (
-                <Field
-                  key={spec.key}
-                  spec={spec}
-                  value={draft[spec.key] ?? spec.default}
-                  onChange={(v) => setDraft((d) => ({ ...d, [spec.key]: v }))}
-                />
-              ))}
-            </CardContent>
-          </Card>
-        ))}
+          {GROUPS.map((group) => (
+            <Card key={group}>
+              <CardHeader>
+                <CardTitle>{group}</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-border">
+                {byGroup.get(group)?.map((spec) => (
+                  <Field
+                    key={spec.key}
+                    spec={spec}
+                    value={draft[spec.key] ?? spec.default}
+                    onChange={(v) => setDraft((d) => ({ ...d, [spec.key]: v }))}
+                  />
+                ))}
+              </CardContent>
+            </Card>
+          ))}
 
-        {Object.keys(props.data.unknown).length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Other keys</CardTitle>
-              <CardDescription>
-                Present in the file but not editable here yet. They are preserved as-is.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-                {Object.entries(props.data.unknown)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join("\n")}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
-      </form>
+          {Object.keys(data.unknown).length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Other keys</CardTitle>
+                <CardDescription>
+                  Present in the file but not editable here yet. They are preserved as-is.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+                  {Object.entries(data.unknown)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join("\n")}
+                </pre>
+              </CardContent>
+            </Card>
+          )}
+        </form>
+      )}
     </div>
   );
 }

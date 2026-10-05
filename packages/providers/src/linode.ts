@@ -1,15 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { continentOf, RestClient } from "./http.js";
-import type {
-  CloudProvider,
-  CloudRegion,
-  CloudSize,
-  CloudVm,
-  CreateVmRequest,
-  FetchLike,
-  FirewallPort,
-  SnapshotState,
-  VmStatus,
+import { alwaysOnMonthly, BILLING } from "./pricing.js";
+import {
+  type CloudProvider,
+  type CloudRegion,
+  type CloudResource,
+  type CloudSize,
+  type CloudVm,
+  type CreateVmRequest,
+  type FetchLike,
+  type FirewallPort,
+  type SnapshotState,
+  tagIn,
+  type VmStatus,
 } from "./types.js";
 
 interface LiInstance {
@@ -19,7 +22,34 @@ interface LiInstance {
   ipv6: string | null;
 }
 
+interface LiType {
+  id: string;
+  label: string;
+  memory: number;
+  vcpus: number;
+  disk: number;
+  class: string;
+  /** monthly is null for plans billed by the hour only (G8 Dedicated, GPUs). */
+  price: { hourly: number; monthly: number | null };
+  region_prices?: Array<{ id: string; hourly: number; monthly: number | null }>;
+}
+
+/** A type's price in a region; hourly-only plans get 730 hours as their month and no cap. */
+function priceIn(t: LiType, region: string) {
+  const p = t.region_prices?.find((x) => x.id === region) ?? t.price;
+  const hourly = p.hourly ?? 0;
+  return p.monthly
+    ? { priceHourly: hourly, priceMonthly: p.monthly, noMonthlyCap: false }
+    : {
+        priceHourly: hourly,
+        priceMonthly: Math.round(hourly * 730 * 100) / 100,
+        noMonthlyCap: true,
+      };
+}
+
 const CLASSES = new Set(["standard", "dedicated", "highmem", "premium"]);
+/** Block storage volumes, per GB and month. */
+const VOLUME_PER_GB_MONTH = 0.1;
 const ALL = { ipv4: ["0.0.0.0/0"], ipv6: ["::/0"] };
 
 /** Linode (Akamai) API v4 with a personal access token. Prices in US dollars. */
@@ -61,22 +91,11 @@ export class LinodeProvider implements CloudProvider {
   }
 
   async sizes(region: string): Promise<CloudSize[]> {
-    const r = await this.#api.get<{
-      data: Array<{
-        id: string;
-        label: string;
-        memory: number;
-        vcpus: number;
-        disk: number;
-        class: string;
-        price: { hourly: number; monthly: number };
-        region_prices?: Array<{ id: string; hourly: number; monthly: number }>;
-      }>;
-    }>("/linode/types", { page_size: 500 });
+    const r = await this.#api.get<{ data: LiType[] }>("/linode/types", { page_size: 500 });
     return r.data
       .filter((t) => CLASSES.has(t.class))
       .map((t) => {
-        const p = t.region_prices?.find((x) => x.id === region) ?? t.price;
+        const p = priceIn(t, region);
         return {
           id: t.id,
           label: t.label,
@@ -85,8 +104,7 @@ export class LinodeProvider implements CloudProvider {
           diskGb: Math.round(t.disk / 1024),
           arch: "x64" as const,
           dedicated: t.class === "dedicated" || t.class === "premium",
-          priceHourly: p.hourly,
-          priceMonthly: p.monthly,
+          ...p,
           currency: "USD" as const,
           priceSource: "api" as const,
         };
@@ -188,6 +206,124 @@ export class LinodeProvider implements CloudProvider {
 
   deleteSnapshot(imageId: string): Promise<void> {
     return this.#api.del(`/images/${imageId}`);
+  }
+
+  async inventory(): Promise<CloudResource[]> {
+    const [instances, types, images, firewalls, volumes] = await Promise.all([
+      this.#all<LiInstance & { label: string; region: string; type: string; tags: string[] }>(
+        "/linode/instances",
+      ),
+      this.#all<LiType>("/linode/types"),
+      this.#all<{ id: string; label: string; size: number; is_public: boolean }>("/images"),
+      this.#all<{ id: number; label: string; tags?: string[] }>("/networking/firewalls"),
+      this.#all<{
+        id: number;
+        label: string;
+        size: number;
+        linode_id: number | null;
+        region: string;
+        tags?: string[];
+      }>("/volumes"),
+    ]);
+    const typeOf = new Map(types.map((t) => [t.id, t]));
+    const out: CloudResource[] = [];
+    for (const i of instances) {
+      if (i.status === "deleting") continue;
+      const tag = i.tags.find((t) => tagIn(t) === t) ?? null;
+      const t = typeOf.get(i.type);
+      out.push({
+        kind: "vm",
+        id: String(i.id),
+        name: i.label,
+        region: i.region,
+        ours: i.tags.includes("cubehold") || !!tag,
+        tag,
+        detail: `${i.type}, ${i.status === "offline" ? "off" : i.status}`,
+        monthly: t
+          ? alwaysOnMonthly("linode", {
+              ...priceIn(t, i.region),
+              diskGb: Math.round(t.disk / 1024),
+            })
+          : null,
+      });
+    }
+    for (const im of images) {
+      if (im.is_public) continue;
+      const gb = im.size / 1024;
+      out.push({
+        kind: "snapshot",
+        id: im.id,
+        name: im.label,
+        region: null,
+        ours: !!tagIn(im.label),
+        tag: tagIn(im.label),
+        detail: `${Math.round(gb * 10) / 10} GB`,
+        monthly: gb * BILLING.linode.snapshotPerGbMonth,
+      });
+    }
+    for (const f of firewalls) {
+      if (!tagIn(f.label) && !f.tags?.includes("cubehold")) continue;
+      out.push({
+        kind: "firewall",
+        id: String(f.id),
+        name: f.label,
+        region: null,
+        ours: true,
+        tag: tagIn(f.label),
+        detail: null,
+        monthly: 0,
+      });
+    }
+    for (const v of volumes) {
+      out.push({
+        kind: "volume",
+        id: String(v.id),
+        name: v.label,
+        region: v.region,
+        ours: !!tagIn(v.label) || !!v.tags?.includes("cubehold"),
+        tag: tagIn(v.label),
+        detail: `${v.size} GB${v.linode_id === null ? ", not attached" : ""}`,
+        monthly: v.size * VOLUME_PER_GB_MONTH,
+      });
+    }
+    return out;
+  }
+
+  async deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void> {
+    switch (r.kind) {
+      case "vm":
+        return this.deleteVm(r.id);
+      case "snapshot":
+        return this.deleteSnapshot(r.id);
+      case "firewall":
+        return this.deleteFirewall(r.id);
+      case "volume": {
+        const v = await this.#api.find<{ linode_id: number | null }>(`/volumes/${r.id}`);
+        if (!v) return;
+        if (v.linode_id !== null) {
+          await this.#api.post(`/volumes/${r.id}/detach`);
+          await new Promise((ok) => setTimeout(ok, 5_000));
+        }
+        return this.#api.del(`/volumes/${r.id}`);
+      }
+      case "ssh-key":
+      case "ip":
+      case "tag":
+        return;
+    }
+  }
+
+  async #all<T>(path: string): Promise<T[]> {
+    const out: T[] = [];
+    for (let page = 1; page < 50; page++) {
+      const r = await this.#api.get<{ data: T[]; pages?: number }>(path, {
+        page_size: 500,
+        page,
+      });
+      out.push(...r.data);
+      if (!r.pages || page >= r.pages) break;
+    }
+    return out;
   }
 }
 

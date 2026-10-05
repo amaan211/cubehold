@@ -71,6 +71,8 @@ export class HostManager {
   #relaunching = false;
   #disposed = false;
   #remotes = new Map<string, Remote>();
+  /** Why a known host has no connection right now (its cloud VM is off). */
+  #offline = new Map<string, string>();
   #eventHandlers = new Set<(hostId: string, ev: AgentEvent) => void>();
   #connectListeners = new Set<(hostId: string, hello: RpcHello) => void>();
   #statusListeners = new Set<(hostId: string, status: LinkStatus) => void>();
@@ -168,7 +170,7 @@ export class HostManager {
   remoteFor(hostId: string): RemoteAgent {
     if (hostId === LOCAL_HOST_ID) return this.local;
     const remote = this.#remotes.get(hostId);
-    if (!remote) throw new HostUnavailableError(`Host ${hostId} does not exist`);
+    if (!remote) throw this.#unavailable(hostId);
     return remote.link.agent;
   }
 
@@ -178,7 +180,7 @@ export class HostManager {
       return this.#localLayout;
     }
     const remote = this.#remotes.get(hostId);
-    if (!remote) throw new HostUnavailableError(`Host ${hostId} does not exist`);
+    if (!remote) throw this.#unavailable(hostId);
     return remote.layout;
   }
 
@@ -206,7 +208,18 @@ export class HostManager {
       }),
     );
     this.#remotes.set(hostId, { link, layout: layoutFor(dataDir, path.posix), unsubscribe });
+    this.#offline.delete(hostId);
     await link.start();
+  }
+
+  /** Mark a host as known but deliberately unconnected, with the reason to show. */
+  setOffline(hostId: string, reason: string | null): void {
+    if (reason) this.#offline.set(hostId, reason);
+    else this.#offline.delete(hostId);
+  }
+
+  #unavailable(hostId: string): HostUnavailableError {
+    return new HostUnavailableError(this.#offline.get(hostId) ?? `Host ${hostId} does not exist`);
   }
 
   detach(hostId: string): void {

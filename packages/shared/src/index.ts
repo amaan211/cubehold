@@ -221,6 +221,9 @@ export const DEFAULT_AUTOMATION: ServerAutomation = {
   vmIdle: "keep",
 };
 
+/** A server on a cloud VM stops after this long with nobody online, unless the owner changes it. */
+export const CLOUD_IDLE_STOP_MINUTES = 15;
+
 // --- Notifications ------------------------------------------------------------
 
 /**
@@ -805,6 +808,20 @@ export function estimateProcessMemoryMb(heapMb: number): number {
 /** Memory kept free for the operating system and everything else on the host. */
 export const HOST_RESERVE_MB = 1024;
 
+/**
+ * Memory slider limits for a machine with `totalMb`: the heap plus Java's own
+ * overhead must leave HOST_RESERVE_MB for everything else.
+ */
+export function heapLimits(totalMb: number) {
+  let maxHeap = 512;
+  while (estimateProcessMemoryMb(maxHeap + 512) <= totalMb - HOST_RESERVE_MB) maxHeap += 512;
+  const maxMemMb = Math.max(1024, maxHeap);
+  return {
+    maxMemMb,
+    defaultMemMb: Math.min(4096, Math.max(1024, Math.floor(totalMb / 4 / 512) * 512)),
+  };
+}
+
 export type WorkloadKind = "vanilla" | "plugins" | "light-mods" | "modpack";
 
 /** VPS memory sizes providers sell, in MB. */
@@ -831,6 +848,17 @@ export function recommendVps(players: number, kind: WorkloadKind) {
   const ramMb = VPS_SIZES_MB.find((s) => s >= needed) ?? needed;
   const vcpus = kind === "modpack" ? (p > 20 ? 8 : 4) : p > 20 || kind === "light-mods" ? 4 : 2;
   return { heapMb, ramMb, vcpus };
+}
+
+/**
+ * Whether a VM or VPS size is big enough for recommendVps's answer. Providers
+ * round memory a little differently, so a few percent short still counts.
+ */
+export function vpsFits(
+  size: { memoryMb: number; vcpus: number },
+  rec: { ramMb: number; vcpus: number },
+): boolean {
+  return size.memoryMb >= rec.ramMb * 0.94 && size.vcpus >= Math.min(rec.vcpus, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,6 +1049,10 @@ export type AddCloudAccountInput = z.infer<typeof addCloudAccountInput>;
 export const cloudAccountInput = z.object({ accountId: z.string().min(1) });
 export const cloudSizesInput = cloudAccountInput.extend({ region: z.string().min(1).max(64) });
 
+/** A server to create on a host as soon as its setup finishes. */
+export const pendingServerInput = createServerInput.omit({ hostId: true });
+export type PendingServerInput = z.infer<typeof pendingServerInput>;
+
 export const createCloudHostInput = cloudAccountInput.extend({
   region: z.string().min(1).max(64),
   size: z.string().min(1).max(64),
@@ -1028,8 +1060,55 @@ export const createCloudHostInput = cloudAccountInput.extend({
   firewall: z.boolean().default(true),
   fail2ban: z.boolean().default(true),
   autoUpdates: z.boolean().default(true),
+  /** Create this Minecraft server on the VM once it is set up (New server → cloud). */
+  server: pendingServerInput.optional(),
 });
 export type CreateCloudHostInput = z.infer<typeof createCloudHostInput>;
+
+export const CloudResourceKind = z.enum([
+  "vm",
+  "snapshot",
+  "firewall",
+  "ssh-key",
+  "volume",
+  "ip",
+  "tag",
+]);
+
+/**
+ * Delete what cubehold made in these accounts: its cloud hosts (with the
+ * servers on them) and anything it left behind. `others` are things it did
+ * not make that the user picked one by one.
+ */
+export const cloudCleanupInput = z.object({
+  accountIds: z.array(z.string().min(1)).min(1),
+  others: z
+    .array(
+      z.object({ accountId: z.string().min(1), kind: CloudResourceKind, id: z.string().min(1) }),
+    )
+    .max(200)
+    .default([]),
+  /** Forget the accounts' tokens afterwards. */
+  disconnect: z.boolean().default(false),
+  confirm: z.literal(true),
+});
+export type CloudCleanupInput = z.infer<typeof cloudCleanupInput>;
+
+/** Delete one thing the panel made but no longer uses (a leftover). */
+export const cloudDeleteResourceInput = z.object({
+  accountId: z.string().min(1),
+  kind: CloudResourceKind,
+  id: z.string().min(1),
+});
+
+export const cloudCostsInput = z
+  .object({
+    month: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .optional(),
+  })
+  .optional();
 
 export const cloudPowerInput = z.object({
   hostId: z.string().min(1),

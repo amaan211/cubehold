@@ -162,11 +162,17 @@ export class NetworkService {
 
   async server(serverId: string) {
     const row = await this.servers.row(serverId);
-    const agent = this.servers.agentOf(row);
+    // A cloud VM that is down has no agent to ask; what the panel knows still shows.
+    let agent: ReturnType<ServerService["agentOf"]> | null = null;
+    try {
+      agent = this.servers.agentOf(row);
+    } catch {
+      agent = null;
+    }
     const local = row.hostId === LOCAL_HOST_ID;
     const [info, mappings, bedrockPort, host] = await Promise.all([
-      agent.networkInfo(false).catch(() => null),
-      local ? agent.portMappings().catch(() => [] as MappingState[]) : [],
+      agent ? agent.networkInfo(false).catch(() => null) : null,
+      local && agent ? agent.portMappings().catch(() => [] as MappingState[]) : [],
       this.servers.bedrockPort(row, false).catch(() => row.settings?.bedrockPort ?? null),
       this.db.select().from(schema.hosts).where(eq(schema.hosts.id, row.hostId)).get(),
     ]);
@@ -198,6 +204,8 @@ export class NetworkService {
         id: row.hostId,
         name: host?.name ?? row.hostId,
         kind: (host?.kind ?? "local") as "local" | "ssh" | "cloud",
+        /** A cloud VM that is stopped or deleted (snapshot kept): its old address may not come back. */
+        vmDown: host?.kind === "cloud" && host.cloud?.power !== "running",
       },
       vps,
       addresses: {

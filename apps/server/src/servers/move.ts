@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { PassThrough } from "node:stream";
 import type { RemoteAgent } from "@cubehold/agent";
-import type { ServerStatus } from "@cubehold/shared";
+import { DEFAULT_AUTOMATION, type ServerStatus } from "@cubehold/shared";
 import { eq } from "drizzle-orm";
 import { type Db, schema } from "../db/index.js";
 import type { HostManager } from "../hosts/manager.js";
@@ -110,6 +110,8 @@ export class ServerMover {
 
     const cleanups: Array<() => Promise<unknown>> = [];
     let switched = false;
+    const saving = await this.servers.cloudAutomation(toHost);
+    let savingNote = false;
     try {
       for (const [i, pack] of packs.entries()) {
         const zipName = `move-${serverId}-${stamp}-${i}.zip`;
@@ -167,6 +169,14 @@ export class ServerMover {
         delete settings.upnp;
         delete settings.ngrok;
         settings.bedrockPort = null;
+        // Onto a cloud VM, idle settings nobody changed become the money-saving ones.
+        const automation = settings.automation;
+        if (!automation || (automation.idleStopMinutes === 0 && automation.vmIdle === "keep")) {
+          if (Object.keys(saving).length > 0) {
+            settings.automation = { ...DEFAULT_AUTOMATION, ...automation, ...saving };
+            savingNote = true;
+          }
+        }
         await tx
           .update(servers)
           .set({
@@ -208,6 +218,12 @@ export class ServerMover {
     this.servers.events.emit("changed", serverId);
     await this.servers.gcJava(fromHost);
     this.bus.system(serverId, `Moved to ${toName}.`);
+    if (savingNote) {
+      this.bus.system(
+        serverId,
+        "On a cloud VM the server now stops after 15 minutes with nobody online, and the VM goes down to save money. Change this in Settings → Automation.",
+      );
+    }
     task.progress(100, "Done");
     if (wasRunning) {
       await this.servers

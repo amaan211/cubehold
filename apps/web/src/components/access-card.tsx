@@ -48,7 +48,10 @@ export function AccessCard({ serverId }: { serverId: string }) {
   const forwarded =
     n?.upnp.mappings.some((m) => m.key.endsWith(":java") && m.status === "active") ||
     n?.checks.public?.reachable === true;
-  const share = tunnel ?? (forwarded ? n?.addresses.publicIpv4 : null) ?? null;
+  // On a VPS or cloud VM players connect straight to the machine's own address.
+  const vmDown = n?.host.vmDown === true;
+  const direct = n?.vps?.ip && !vmDown ? n.addresses.publicIpv4 : null;
+  const share = direct ?? tunnel ?? (forwarded ? n?.addresses.publicIpv4 : null) ?? null;
   const worst =
     r?.checks.find((c) => c.status === "fail") ?? r?.checks.find((c) => c.status === "warn");
 
@@ -72,11 +75,19 @@ export function AccessCard({ serverId }: { serverId: string }) {
             <>
               <Address value={share} />
               <p className="text-xs text-muted-foreground">
-                {tunnel
-                  ? "Through playit.gg, from anywhere."
-                  : "Your public address (port forwarding)."}
+                {direct
+                  ? n?.host.kind === "cloud"
+                    ? "The cloud VM's address, from anywhere. It usually changes when the VM is restored or restarted."
+                    : "The VPS's address, from anywhere."
+                  : tunnel
+                    ? "Through playit.gg, from anywhere."
+                    : "Your public address (port forwarding)."}
               </p>
             </>
+          ) : vmDown ? (
+            <p className="text-muted-foreground">
+              The cloud VM is down to save money. Its address shows here once the server starts.
+            </p>
           ) : n?.addresses.lan ? (
             <>
               <Address value={n.addresses.lan} />

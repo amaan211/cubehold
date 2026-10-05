@@ -29,7 +29,10 @@ export interface CloudSize {
   /** Burstable CPU (AWS t-family): heavy use costs extra or gets throttled. */
   burstable?: boolean;
   priceHourly: number;
+  /** With noMonthlyCap, simply the hourly price for a month (730 h). */
   priceMonthly: number;
+  /** Billed by the hour with no monthly cap (Linode G8, Vultr hourly plans). */
+  noMonthlyCap?: boolean;
   currency: "EUR" | "USD";
   /** Prices are the provider's list price for this region, or an estimate. */
   priceSource: "api" | "estimate";
@@ -83,6 +86,30 @@ export interface SnapshotState {
   sizeGb: number | null;
 }
 
+export type ResourceKind = "vm" | "snapshot" | "firewall" | "ssh-key" | "volume" | "ip" | "tag";
+
+/** Something in a cloud account, as inventory() finds it. */
+export interface CloudResource {
+  kind: ResourceKind;
+  /** The provider's id, as deleteResource takes it. */
+  id: string;
+  name: string;
+  region: string | null;
+  /** Made by cubehold: it carries cubehold's label, tag or name. */
+  ours: boolean;
+  /** The cubehold-<sha12> tag tying it to a host in the panel, when it has one. */
+  tag: string | null;
+  /** Size, state and the like, for people. */
+  detail: string | null;
+  /** What it costs a month as it is now, in the provider's currency: 0 when free, null when unknown. */
+  monthly: number | null;
+}
+
+/** The cubehold-<sha12> tag at the start of a name, label or description. */
+export function tagIn(text: string | null | undefined): string | null {
+  return /^(cubehold-[0-9a-f]{12})(?![0-9a-f])/.exec(text ?? "")?.[1] ?? null;
+}
+
 /**
  * One provider account. Every method maps provider errors to CloudError with
  * a message a person can act on.
@@ -114,6 +141,14 @@ export interface CloudProvider {
   snapshotVm(id: string, name: string): Promise<string>;
   snapshotState(handle: string): Promise<SnapshotState>;
   deleteSnapshot(imageId: string): Promise<void>;
+  /**
+   * Everything cubehold made in the account (VMs, snapshots, firewalls, SSH
+   * keys, tags), plus anything else that costs money (VMs, snapshots,
+   * volumes, unused addresses). VMs being deleted are left out.
+   */
+  inventory(): Promise<CloudResource[]>;
+  /** Delete one thing inventory() listed; gone already counts as done. */
+  deleteResource(r: Pick<CloudResource, "kind" | "id">): Promise<void>;
 }
 
 export type CloudErrorCode =

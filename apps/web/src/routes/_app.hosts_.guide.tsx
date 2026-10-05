@@ -1,42 +1,53 @@
-import { recommendVps, type WorkloadKind } from "@cubehold/shared";
+import { alwaysOnMonthly } from "@cubehold/providers/pricing";
+import { recommendVps, vpsFits, type WorkloadKind } from "@cubehold/shared";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, CheckCircle2, ExternalLink, Plus } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Cloud, ExternalLink, Plus } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn, formatMb } from "@/lib/utils";
+import { cn, formatMb, formatMoney } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/hosts_/guide")({
   component: Guide,
 });
 
 /** When the prices below were last looked up. */
-const CHECKED = "September 2026";
+const CHECKED = "October 2026";
+/** For sorting only: roughly what a dollar is in euros. */
+const USD_IN_EUR = 0.92;
 
 interface Plan {
   provider: string;
   plan: string;
   vcpus: number;
-  ramMb: number;
-  price: string;
-  /** For sorting and "cheapest that fits"; monthly, roughly in euros. */
-  approxEur: number;
+  memoryMb: number;
+  /** What a month costs with the server on all month, its IPv4 address included. */
+  monthly: number;
+  currency: "EUR" | "USD";
+  /** Contract or tax terms the price needs, shown next to it. */
+  terms?: string;
   url: string;
   notes: string;
   arm?: boolean;
+  /** The panel can create this one for you from a connected account. */
+  inPanel?: boolean;
 }
+
+/** Hetzner's list prices; the month adds the €0.50 IPv4 address, as Create a cloud server does. */
+const hetzner = (priceHourly: number, priceMonthly: number, diskGb: number) =>
+  alwaysOnMonthly("hetzner", { priceHourly, priceMonthly, diskGb });
 
 const PLANS: Plan[] = [
   {
     provider: "Oracle Cloud",
     plan: "Always Free Ampere A1",
     vcpus: 2,
-    ramMb: 12288,
-    price: "Free",
-    approxEur: 0,
+    memoryMb: 12288,
+    monthly: 0,
+    currency: "USD",
     arm: true,
     url: "https://www.oracle.com/cloud/free/",
     notes:
@@ -46,20 +57,22 @@ const PLANS: Plan[] = [
     provider: "OVHcloud",
     plan: "VPS-1",
     vcpus: 2,
-    ramMb: 4096,
-    price: "$4.54",
-    approxEur: 4.2,
+    memoryMb: 4096,
+    monthly: 4.54,
+    currency: "USD",
+    terms: "paid yearly",
     url: "https://www.ovhcloud.com/en/vps/",
     notes:
-      "Game-grade anti-DDoS and unlimited traffic included. Data centres in Europe, North America and Asia.",
+      "Game-grade anti-DDoS and unlimited traffic included. More per month without the yearly commitment. Data centres in Europe, North America and Asia.",
   },
   {
     provider: "OVHcloud",
     plan: "VPS-2",
     vcpus: 4,
-    ramMb: 8192,
-    price: "$8.50",
-    approxEur: 7.9,
+    memoryMb: 8192,
+    monthly: 8.5,
+    currency: "USD",
+    terms: "paid yearly",
     url: "https://www.ovhcloud.com/en/vps/",
     notes: "The same with room for plugins and more players.",
   },
@@ -67,64 +80,78 @@ const PLANS: Plan[] = [
     provider: "Contabo",
     plan: "Cloud VPS 4",
     vcpus: 4,
-    ramMb: 8192,
-    price: "€5.50",
-    approxEur: 5.5,
+    memoryMb: 8192,
+    monthly: 5.5,
+    currency: "EUR",
+    terms: "24-month term, VAT included",
     url: "https://contabo.com/en/vps/",
     notes:
-      "Lots of memory for the money, on long contracts (monthly billing costs more). Cores are slower and busier than elsewhere.",
+      "Lots of memory for the money on a long contract; shorter terms cost more a month. Cores are slower and busier than elsewhere.",
   },
   {
     provider: "Hetzner",
     plan: "CX23",
     vcpus: 2,
-    ramMb: 4096,
-    price: "€5.49",
-    approxEur: 5.49,
+    memoryMb: 4096,
+    monthly: hetzner(0.0088, 5.49, 40),
+    currency: "EUR",
+    terms: "before VAT",
     url: "https://www.hetzner.com/cloud/",
-    notes: "Fast and reliable; Germany and Finland at this price. Excl. VAT; raised twice in 2026.",
+    inPanel: true,
+    notes:
+      "€5.49 plus €0.50 for the IPv4 address. Fast and reliable; Germany and Finland only, and often sold out since September 2026. Billed by the hour, so you can delete it any time.",
   },
   {
     provider: "Hetzner",
     plan: "CX33",
     vcpus: 4,
-    ramMb: 8192,
-    price: "€8.49",
-    approxEur: 8.49,
+    memoryMb: 8192,
+    monthly: hetzner(0.0136, 8.49, 80),
+    currency: "EUR",
+    terms: "before VAT",
     url: "https://www.hetzner.com/cloud/",
-    notes: "Excl. VAT. Hourly billing, so you can delete it any time.",
+    inPanel: true,
+    notes: "€8.49 plus €0.50 for the IPv4 address. Prices went up twice in 2026.",
   },
   {
     provider: "Hetzner",
     plan: "CX43",
     vcpus: 8,
-    ramMb: 16384,
-    price: "€15.99",
-    approxEur: 15.99,
+    memoryMb: 16384,
+    monthly: hetzner(0.0256, 15.99, 160),
+    currency: "EUR",
+    terms: "before VAT",
     url: "https://www.hetzner.com/cloud/",
-    notes: "Excl. VAT. For modpacks.",
+    inPanel: true,
+    notes: "€15.99 plus €0.50 for the IPv4 address. For modpacks.",
   },
   {
     provider: "DigitalOcean",
     plan: "Basic 4 GB",
     vcpus: 2,
-    ramMb: 4096,
-    price: "$24",
-    approxEur: 22,
+    memoryMb: 4096,
+    monthly: 24,
+    currency: "USD",
+    terms: "before tax",
     url: "https://www.digitalocean.com/pricing/droplets",
+    inPanel: true,
     notes: "Easy to use and well documented, but several times the price of the above.",
   },
   {
     provider: "AWS Lightsail",
     plan: "4 GB",
     vcpus: 2,
-    ramMb: 4096,
-    price: "$24",
-    approxEur: 22,
+    memoryMb: 4096,
+    monthly: 24,
+    currency: "USD",
+    terms: "before tax",
     url: "https://aws.amazon.com/lightsail/pricing/",
-    notes: "Fine if you already use AWS. Open the port under Networking as well.",
+    notes:
+      "Fine if you already use AWS; the IPv4 address is included. Open the port under Networking as well. (The panel's own AWS option makes EC2 instances, priced separately.)",
   },
 ];
+
+const inEur = (p: Plan) => (p.currency === "EUR" ? p.monthly : p.monthly * USD_IN_EUR);
 
 const KINDS: Array<{ id: WorkloadKind; label: string; hint: string }> = [
   { id: "vanilla", label: "Vanilla or Paper", hint: "No or few plugins" },
@@ -137,9 +164,9 @@ function Guide() {
   const [players, setPlayers] = useState(8);
   const [kind, setKind] = useState<WorkloadKind>("plugins");
   const rec = recommendVps(players, kind);
-  const fits = (p: Plan) => p.ramMb >= rec.ramMb && p.vcpus >= Math.min(rec.vcpus, 4);
-  const cheapest = PLANS.filter((p) => fits(p) && p.approxEur > 0).sort(
-    (a, b) => a.approxEur - b.approxEur,
+  const fits = (p: Plan) => vpsFits(p, rec);
+  const cheapest = PLANS.filter((p) => fits(p) && p.monthly > 0).sort(
+    (a, b) => inEur(a) - inEur(b),
   )[0];
 
   return (
@@ -211,7 +238,8 @@ function Guide() {
                   <strong className="text-foreground">
                     {cheapest.provider} {cheapest.plan}
                   </strong>{" "}
-                  at {cheapest.price} a month.
+                  at {formatMoney(cheapest.monthly, cheapest.currency)} a month
+                  {cheapest.terms ? ` (${cheapest.terms})` : ""}.
                 </>
               )}
             </p>
@@ -223,8 +251,9 @@ function Guide() {
         <CardHeader>
           <CardTitle>Where</CardTitle>
           <CardDescription>
-            Monthly prices checked in {CHECKED}; they change, so check the provider's page. Pick a
-            location close to your players.
+            Prices checked in {CHECKED}, for a month with the server always on and its IPv4 address
+            included; they change, so check the provider's page. Pick a location close to your
+            players.
           </CardDescription>
         </CardHeader>
         <CardContent className="relative overflow-x-auto p-0 sm:p-6 sm:pt-0">
@@ -258,7 +287,7 @@ function Guide() {
                     <span className="block text-xs text-muted-foreground">{p.plan}</span>
                   </td>
                   <td className="py-2.5 pr-3 whitespace-nowrap">
-                    {formatMb(p.ramMb)}, {p.vcpus} cores
+                    {formatMb(p.memoryMb)}, {p.vcpus} cores
                     {p.arm && (
                       <Badge variant="outline" className="ml-1.5">
                         ARM
@@ -270,7 +299,20 @@ function Guide() {
                       </span>
                     )}
                   </td>
-                  <td className="py-2.5 pr-3 whitespace-nowrap">{p.price}</td>
+                  <td className="py-2.5 pr-3 whitespace-nowrap">
+                    {p.monthly === 0 ? "Free" : formatMoney(p.monthly, p.currency)}
+                    {p.terms && (
+                      <span className="block text-xs text-muted-foreground">{p.terms}</span>
+                    )}
+                    {p.inPanel && (
+                      <Link
+                        to="/hosts/cloud"
+                        className="mt-0.5 flex items-center gap-1 text-xs text-primary hover:underline"
+                      >
+                        <Cloud className="size-3" /> cubehold can create it
+                      </Link>
+                    )}
+                  </td>
                   <td className="py-2.5 pr-6 text-xs text-muted-foreground sm:pr-0">{p.notes}</td>
                 </tr>
               ))}
@@ -304,11 +346,23 @@ function Guide() {
               password is not kept.
             </li>
           </ol>
-          <Button asChild className="mt-4">
-            <Link to="/hosts/new">
-              <Plus /> Add a VPS
-            </Link>
-          </Button>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button asChild>
+              <Link to="/hosts/new">
+                <Plus /> Add a VPS
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link to="/servers/new" search={{ cloud: true }}>
+                <Cloud /> Or let cubehold create one
+              </Link>
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            With a Hetzner, DigitalOcean, Vultr, Linode or AWS account, the panel can create the VM
+            and the Minecraft server in one go, and turn the VM off while nobody plays. It shows the
+            same prices as this page.
+          </p>
         </CardContent>
       </Card>
     </div>

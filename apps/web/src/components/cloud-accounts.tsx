@@ -1,7 +1,7 @@
 import type { CloudProviderSupported } from "@cubehold/shared";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Check, Cloud, ExternalLink, Loader2, Plus, Trash2 } from "lucide-react";
+import { Check, Cloud, ExternalLink, Loader2, Plus, Trash2, Wallet } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/network";
@@ -42,6 +42,13 @@ export function CloudAccounts() {
             <Button asChild size="sm">
               <Link to="/hosts/cloud">
                 <Plus /> Create a cloud server
+              </Link>
+            </Button>
+          )}
+          {list.length > 0 && (
+            <Button asChild size="sm" variant="outline">
+              <Link to="/costs">
+                <Wallet /> Costs and clean-up
               </Link>
             </Button>
           )}

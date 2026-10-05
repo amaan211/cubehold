@@ -13,6 +13,7 @@ test("the phone layout has bottom navigation and fits the screen", async ({ page
   await expect(nav).toBeVisible();
   for (const [label, heading] of [
     ["Hosts", "Hosts"],
+    ["Costs", "Cloud costs"],
     ["Settings", "Settings"],
     ["New", "New server"],
     ["Servers", "Servers"],

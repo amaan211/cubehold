@@ -2,6 +2,9 @@ import { AWS_POLICY } from "@cubehold/providers";
 import {
   addCloudAccountInput,
   cloudAccountInput,
+  cloudCleanupInput,
+  cloudCostsInput,
+  cloudDeleteResourceInput,
   cloudPowerInput,
   cloudSizesInput,
   createCloudHostInput,
@@ -61,4 +64,31 @@ export const cloudRouter = router({
   removeHost: protectedProcedure
     .input(z.object({ hostId: z.string().min(1) }))
     .mutation(wrap(soft(({ ctx, input }) => ctx.services.cloud.removeHost(input.hostId)))),
+
+  /** What the cloud cost in a month, day by day and VM by VM (from the panel's own records). */
+  costs: protectedProcedure
+    .input(cloudCostsInput)
+    .query(wrap(({ ctx, input }) => ctx.services.cloud.costs(input?.month))),
+
+  /** Ask every connected account what is in it: cubehold's things and others that cost money. */
+  scan: protectedProcedure.query(wrap(soft(({ ctx }) => ctx.services.cloud.scan()))),
+
+  /** Delete one leftover that no host in the panel uses. */
+  deleteResource: protectedProcedure
+    .input(cloudDeleteResourceInput)
+    .mutation(
+      wrap(
+        soft(({ ctx, input }) =>
+          ctx.services.cloud.deleteResource(input.accountId, input.kind, input.id),
+        ),
+      ),
+    ),
+
+  /** Delete everything cubehold made in the chosen accounts, in the background. */
+  cleanup: protectedProcedure
+    .input(cloudCleanupInput)
+    .mutation(wrap(soft(({ ctx, input }) => ctx.services.cloud.startCleanup(input)))),
+
+  /** Progress of the running (or last) clean-up. */
+  cleanupStatus: protectedProcedure.query(({ ctx }) => ctx.services.cloud.cleanupStatus()),
 });

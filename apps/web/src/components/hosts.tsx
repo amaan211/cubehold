@@ -1,3 +1,4 @@
+import { alwaysOnMonthly, hourlyRate } from "@cubehold/providers/pricing";
 import type { HostHardenAction } from "@cubehold/shared";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -35,7 +36,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { errorMessage, queryClient, useTRPC } from "@/lib/trpc";
-import { cn, formatDuration, formatMb, timeAgo } from "@/lib/utils";
+import { cn, formatDuration, formatMb, formatMoney, timeAgo } from "@/lib/utils";
 
 type Trpc = ReturnType<typeof useTRPC>;
 export type HostView = inferOutput<Trpc["hosts"]["list"]>[number];
@@ -57,8 +58,8 @@ const stateBadge: Record<
   "vm-starting": { label: "starting VM", variant: "outline" },
   "vm-stopping": { label: "stopping VM", variant: "outline" },
   "vm-stopped": { label: "VM off", variant: "outline" },
-  hibernating: { label: "saving VM", variant: "outline" },
-  hibernated: { label: "saved, off", variant: "outline" },
+  hibernating: { label: "saving snapshot", variant: "outline" },
+  hibernated: { label: "VM deleted, snapshot kept", variant: "outline" },
   restoring: { label: "restoring VM", variant: "outline" },
   "vm-missing": { label: "VM missing", variant: "danger" },
 };
@@ -94,7 +95,15 @@ const stepIcon = {
 } as const;
 
 /** Steps of a setup, repair or update, with the command output underneath. */
-export function JobSteps({ job, defaultLog = false }: { job: HostJob; defaultLog?: boolean }) {
+export function JobSteps({
+  job,
+  defaultLog = false,
+  logLabel = "what ran on the server",
+}: {
+  job: HostJob;
+  defaultLog?: boolean;
+  logLabel?: string;
+}) {
   const [showLog, setShowLog] = useState(defaultLog);
   return (
     <div className="space-y-3">
@@ -130,7 +139,7 @@ export function JobSteps({ job, defaultLog = false }: { job: HostJob; defaultLog
             <ChevronDown
               className={cn("size-3.5 transition-transform", !showLog && "-rotate-90")}
             />
-            {showLog ? "Hide" : "Show"} what ran on the server
+            {showLog ? "Hide" : "Show"} {logLabel}
           </button>
           {showLog && (
             <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-muted p-3 text-[11px] leading-relaxed whitespace-pre-wrap">
@@ -421,14 +430,6 @@ export function SshHostCard({ h }: { h: HostView }) {
   );
 }
 
-function money(n: number, currency: "EUR" | "USD"): string {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    maximumFractionDigits: n < 1 ? 3 : 2,
-  }).format(n);
-}
-
 /** Price, this month's cost, and the power buttons of a cloud VM. */
 function CloudPanel({ h, busy }: { h: HostView; busy: boolean }) {
   const trpc = useTRPC();
@@ -441,6 +442,18 @@ function CloudPanel({ h, busy }: { h: HostView; busy: boolean }) {
   );
   if (!c) return null;
   const cur = c.price.currency;
+  const listed = {
+    priceHourly: c.price.hourly,
+    priceMonthly: c.price.monthly,
+    diskGb: c.size.diskGb,
+    noMonthlyCap: c.size.noMonthlyCap,
+  };
+  const extra =
+    c.provider === "hetzner"
+      ? "IPv4 included"
+      : c.provider === "aws"
+        ? "IPv4 and disk included"
+        : "";
   const off = h.state === "vm-stopped" || h.state === "hibernated";
   const up = h.state === "online" || h.state === "agent-down" || h.state === "offline";
   return (
@@ -448,15 +461,16 @@ function CloudPanel({ h, busy }: { h: HostView; busy: boolean }) {
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
         <dt className="text-muted-foreground">Price</dt>
         <dd>
-          {money(c.price.hourly, cur)}/h, at most {money(c.price.monthly, cur)}/month
-          {c.provider === "hetzner" ? " + IPv4, excl. VAT" : ""}
-          {c.price.estimate ? " (estimate)" : ""}
+          {formatMoney(hourlyRate(c.provider, listed, "running"), cur)}/h while on,{" "}
+          {formatMoney(alwaysOnMonthly(c.provider, listed), cur)} if never off
+          {extra ? ` (${extra}, before tax)` : " (before tax)"}
+          {c.price.estimate ? ", estimated" : ""}
         </dd>
         <dt className="text-muted-foreground">
           {new Date(`${c.month.month}-01`).toLocaleString(undefined, { month: "long" })} so far
         </dt>
         <dd>
-          <strong>{money(c.month.total, cur)}</strong>{" "}
+          <strong>{formatMoney(c.month.total, cur)}</strong>{" "}
           <span className="text-muted-foreground">
             ({c.month.hours.running} h on
             {c.month.hours.stopped ? `, ${c.month.hours.stopped} h stopped` : ""}
@@ -466,21 +480,22 @@ function CloudPanel({ h, busy }: { h: HostView; busy: boolean }) {
         {c.lastMonth && (
           <>
             <dt className="text-muted-foreground">Last month</dt>
-            <dd>about {money(c.lastMonth.total, cur)}</dd>
+            <dd>about {formatMoney(c.lastMonth.total, cur)}</dd>
           </>
         )}
         {h.state === "hibernated" && c.snapshotGb != null && (
           <>
             <dt className="text-muted-foreground">Snapshot</dt>
             <dd>
-              {c.snapshotGb} GB, about {money(c.snapshotGb * c.snapshotPerGbMonth, cur)}/month
+              {c.snapshotGb} GB, about {formatMoney(c.snapshotGb * c.snapshotPerGbMonth, cur)}/month
             </dd>
           </>
         )}
       </dl>
       {h.state === "vm-stopped" && !c.stopSavesMoney && (
         <p className="text-xs text-amber-700 dark:text-amber-400">
-          {c.providerLabel} bills a stopped VM in full. Save and delete it to pay only for storage.
+          {c.providerLabel} bills a stopped VM in full. Delete it and keep a snapshot to pay only
+          for storage.
         </p>
       )}
       {h.state === "hibernated" && (
@@ -520,9 +535,9 @@ function CloudPanel({ h, busy }: { h: HostView; busy: boolean }) {
             variant="outline"
             disabled={busy || power.isPending}
             onClick={() => power.mutate({ hostId: h.id, action: "hibernate" })}
-            title="Stop everything, save the disk as a snapshot and delete the VM"
+            title="Stop the servers, save the disk as a snapshot, then delete the VM"
           >
-            <Save /> Save and delete VM
+            <Save /> Delete VM, keep snapshot
           </Button>
         )}
       </div>

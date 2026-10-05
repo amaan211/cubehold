@@ -5,6 +5,7 @@ import {
   type AddHostInput,
   type HostHardenAction,
   LOCAL_HOST_ID,
+  type PendingServerInput,
   type SshLoginInput,
 } from "@cubehold/shared";
 import { eq } from "drizzle-orm";
@@ -80,6 +81,8 @@ export interface HostMeta {
   lastError?: string | null;
   warnings?: string[];
   options?: { firewall: boolean; fail2ban: boolean; autoUpdates: boolean; keysOnly?: boolean };
+  /** A Minecraft server to create once setup has finished (New server → new cloud VM). */
+  pendingServer?: PendingServerInput | null;
 }
 
 /** What the cloud service adds to hosts it created. */
@@ -109,6 +112,8 @@ export interface HostJobView {
   warnings: string[];
   startedAt: string;
   finishedAt: string | null;
+  /** The server this job created, if it made one. */
+  serverId: string | null;
 }
 
 export class Job {
@@ -125,6 +130,7 @@ export class Job {
       warnings: [],
       startedAt: nowIso(),
       finishedAt: null,
+      serverId: null,
     };
   }
 
@@ -190,6 +196,10 @@ export class Job {
     if (error) this.line(`!! ${this.view.error}`);
   }
 }
+
+/** What pages say while a cloud VM is down: nothing on it can be read until it runs again. */
+const VM_DOWN =
+  "This server's cloud VM is turned off to save money. Start the server to bring it back; this works again once it runs.";
 
 const SETUP_STEPS: Array<[string, string]> = [
   ["connect", "Connect over SSH"],
@@ -272,7 +282,10 @@ export class HostService {
     for (const row of rows) {
       const meta = metaOf(row);
       // A cloud VM that is off or saved as a snapshot has nothing to connect to.
-      if (row.kind === "cloud" && !this.#cloud?.vmRunning(row)) continue;
+      if (row.kind === "cloud" && !this.#cloud?.vmRunning(row)) {
+        this.hosts.setOffline(row.id, VM_DOWN);
+        continue;
+      }
       if (!meta.setupAt || !meta.hostKey || !meta.agentPort) {
         // Setup never finished; it shows as failed until retried or removed.
         await this.#setStatus(row.id, "error");
@@ -493,6 +506,7 @@ export class HostService {
     const extra: Array<[string, string]> = keysOnly
       ? [["keys", "Allow SSH logins with keys only"]]
       : [];
+    if (first.pendingServer) extra.push(["server", "Create the Minecraft server"]);
     const job = new Job(hostId, "setup", [...(cloud?.steps ?? []), ...SETUP_STEPS, ...extra]);
     this.#jobs.set(hostId, job);
     await this.#setStatus(hostId, "provisioning");
@@ -602,6 +616,25 @@ export class HostService {
         warnings: job.view.warnings,
       });
       this.#security.delete(hostId);
+      const pending = metaOf(await this.#row(hostId)).pendingServer;
+      if (pending) {
+        // Asked for once: a failure here leaves a working host to create the server on by hand.
+        await this.#patchMeta(hostId, { pendingServer: null });
+        const server = await job.run(
+          "server",
+          async () => {
+            try {
+              return await this.servers.create({ ...pending, hostId });
+            } catch (err) {
+              throw new Error(
+                `The VM is ready, but the server could not be created: ${errMessage(err)} Create it from New server.`,
+              );
+            }
+          },
+          (sv) => `${sv.name} is installing`,
+        );
+        job.view.serverId = server.id;
+      }
       job.finish(null);
     } catch (err) {
       job.finish(err);
@@ -862,6 +895,7 @@ export class HostService {
   /** Stop connecting (the VM is being turned off). */
   pause(hostId: string): void {
     this.hosts.detach(hostId);
+    this.hosts.setOffline(hostId, VM_DOWN);
     this.#info.delete(hostId);
   }
 

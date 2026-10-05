@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Cloud, LogOut, Moon, Plus, Server, Settings, Sun } from "lucide-react";
+import { Cloud, LogOut, Moon, Plus, Server, Settings, Sun, Wallet } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { UnlockBanner } from "@/components/unlock-banner";
@@ -10,6 +10,7 @@ import { queryClient, useTRPC } from "@/lib/trpc";
 const nav = [
   { to: "/", label: "Servers", icon: Server, exact: true },
   { to: "/hosts", label: "Hosts", icon: Cloud, exact: false },
+  { to: "/costs", label: "Costs", icon: Wallet, exact: false },
   { to: "/settings", label: "Settings", icon: Settings, exact: false },
 ] as const;
 
@@ -120,7 +121,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Phones: the sections at the bottom, within reach of a thumb. */}
       <nav
         aria-label="Sections"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
         {[
           ...nav.slice(0, 1),
