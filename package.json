@@ -1,6 +1,6 @@
 {
   "name": "cubehold",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Multi-cloud Minecraft server manager: provision and manage servers on your own cloud accounts, a cheap VPS, or your own machine.",
   "packageManager": "pnpm@12.6.0",
